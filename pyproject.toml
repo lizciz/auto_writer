@@ -1,0 +1,20 @@
+[project]
+name = "auto_writer"
+version = "0.2.1"
+requires-python = ">=3.9"
+dependencies = [
+    "requests",
+]
+
+[project.scripts]
+aw = "auto_writer:main"
+auto_writer = "auto_writer:main"
+vc = "validate_chapter:main"
+validate_chapter = "validate_chapter:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["auto_writer", "validate_chapter"]

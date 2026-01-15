@@ -1,0 +1,2 @@
+auto_writer
+validate_chapter
