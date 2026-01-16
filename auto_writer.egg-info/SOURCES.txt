@@ -1,9 +1,0 @@
-auto_writer.py
-pyproject.toml
-validate_chapter.py
-auto_writer.egg-info/PKG-INFO
-auto_writer.egg-info/SOURCES.txt
-auto_writer.egg-info/dependency_links.txt
-auto_writer.egg-info/entry_points.txt
-auto_writer.egg-info/requires.txt
-auto_writer.egg-info/top_level.txt

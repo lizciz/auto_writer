@@ -1,5 +1,0 @@
-[console_scripts]
-auto_writer = auto_writer:main
-aw = auto_writer:main
-validate_chapter = validate_chapter:main
-vc = validate_chapter:main

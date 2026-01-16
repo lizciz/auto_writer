@@ -74,6 +74,8 @@ APP_VERSION = "2.1.0"
 
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 USER_PROMPT_FILENAME = "user_prompt.md"
+SUMMARY_SYSTEM_PROMPT_FILENAME = "summary_system_prompt.md"
+SUMMARY_USER_PROMPT_FILENAME = "summary_user_prompt.md"
 PROFILE_FILENAME = "profile.json"
 
 
@@ -329,16 +331,42 @@ Output rules:
 
 DEFAULT_USER_WRITE_TEMPLATE = """Write chapter {chapter_count} of the story "{title}".
 Use the provided chapter outline, and keep the new chapter consistent with
-the previous {num_prev_chapters} chapter(s) in tone, style, voice, and canon.
+the previous chapter summary and recent context in tone, style, voice, and canon.
 
-If something in the outline conflicts with what already happened in the
-previous chapters, resolve it in a way that feels natural and believable.
+If something in the outline conflicts with what already happened, resolve it
+in a way that feels natural and believable.
 
 # Chapter outline
 {chapter_outline}
 
-# Previous chapters ({num_prev_chapters})
-{previous_chapters}
+# Previous chapter summary
+{previous_summary}
+
+# Recent context (last ~{last_n_words} words of the previous chapter)
+{recent_context}
+"""
+
+SUMMARY_SYSTEM_WRITER = """You are a meticulous story summarizer for long-form adult fiction.
+Your task is to create concise, structured summaries that track the story's progress.
+Focus on key developments that affect the plot, character relationships, and story status.
+The goal is that the summary can be used to give context when writing the next story chapter.
+
+"""
+
+DEFAULT_SUMMARY_USER_TEMPLATE = """Create a summary of chapter {chapter_count} of the story "{title}".
+
+Requirements:
+- Current status: What is the main character's current situation?
+- Relationship status: Key relationships and their current state
+- Key plot point reminder: Important events or decisions that affect future chapters
+
+Keep the summary to {max_words} words or less.
+
+# Chapter content
+{chapter_content}
+
+# Previous chapter summary (if any)
+{previous_summary}
 """
 
 
@@ -356,6 +384,22 @@ def set_default_user_prompt(project: Path) -> None:
         print("WARNING: User prompt already exists; not overwriting.")
         return
     write_text(up_path, DEFAULT_USER_WRITE_TEMPLATE)
+
+
+def set_default_summary_system_prompt(project: Path) -> None:
+    ssp_path = project / ".story" / SUMMARY_SYSTEM_PROMPT_FILENAME
+    if ssp_path.exists():
+        print("WARNING: Summary system prompt already exists; not overwriting.")
+        return
+    write_text(ssp_path, SUMMARY_SYSTEM_WRITER)
+
+
+def set_default_summary_user_prompt(project: Path) -> None:
+    sup_path = project / ".story" / SUMMARY_USER_PROMPT_FILENAME
+    if sup_path.exists():
+        print("WARNING: Summary user prompt already exists; not overwriting.")
+        return
+    write_text(sup_path, DEFAULT_SUMMARY_USER_TEMPLATE)
 
 
 def load_system_prompt(project: Path) -> str:
@@ -388,6 +432,38 @@ def load_user_prompt(project: Path) -> str:
         )
         sys.exit(1)
     return user_prompt
+
+
+def load_summary_system_prompt(project: Path) -> str:
+    ssp_path = project / ".story" / SUMMARY_SYSTEM_PROMPT_FILENAME
+    summary_system_prompt = read_text(ssp_path).strip()
+    if not summary_system_prompt:
+        print(
+            "ERROR: Summary system prompt is empty.\n"
+            "Set a new summary system prompt with:\n"
+            "  auto_writer --summary-system-prompt=<path>\n"
+            "or restore to default with:\n"
+            "  auto_writer --summary-system-prompt=default",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return summary_system_prompt
+
+
+def load_summary_user_prompt(project: Path) -> str:
+    sup_path = project / ".story" / SUMMARY_USER_PROMPT_FILENAME
+    summary_user_prompt = read_text(sup_path).strip()
+    if not summary_user_prompt:
+        print(
+            "ERROR: Summary user prompt is empty.\n"
+            "Set a new summary user prompt with:\n"
+            "  auto_writer --summary-user-prompt=<path>\n"
+            "or restore to default with:\n"
+            "  auto_writer --summary-user-prompt=default",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return summary_user_prompt
 
 
 class _SafeFormatDict(dict):
@@ -522,13 +598,74 @@ def load_profile(project: Path) -> Dict[str, Any]:
     }
 
 
+def _truncate_to_word_limit_with_sentence_boundary(text: str, max_words: int, from_end: bool = False) -> str:
+    """
+    Truncate text to approximately max_words words, but ensure we end/start at a sentence boundary.
+
+    Args:
+        text: The text to truncate
+        max_words: Maximum number of words to include
+        from_end: If True, take the last max_words words; if False, take the first max_words words
+    """
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+
+    if from_end:
+        # For extracting from the end: split into sentences, then take the last sentences
+        # that fit within max_words
+        import re
+        sentences = re.split(r'(?<=[.!?…]) +', text.strip())
+
+        # Start from the end and accumulate sentences until we hit the word limit
+        selected_sentences = []
+        word_count = 0
+
+        for sentence in reversed(sentences):
+            sentence_words = sentence.split()
+            if word_count + len(sentence_words) <= max_words:
+                selected_sentences.insert(0, sentence)
+                word_count += len(sentence_words)
+            else:
+                break
+
+        if selected_sentences:
+            return " ".join(selected_sentences)
+
+        # Fallback: just take the last max_words words
+        return " ".join(words[-max_words:])
+    else:
+        # Take the first max_words words (original behavior)
+        truncated_words = words[:max_words]
+        truncated_text = " ".join(truncated_words)
+
+        # Find the last sentence-ending punctuation within our truncated text
+        sentence_endings = [".", "!", "?", "...", "…"]
+        last_sentence_end = -1
+
+        for ending in sentence_endings:
+            pos = truncated_text.rfind(ending)
+            if pos > last_sentence_end:
+                last_sentence_end = pos
+
+        if last_sentence_end > 0:
+            # Include the sentence-ending punctuation
+            return truncated_text[:last_sentence_end + 1]
+
+        # If no sentence boundary found, just return the word-limited text
+        return truncated_text + "..."
+
+
 def build_previous_chapters_block(
+    *,
     story_dir: Path,
     current_chapter: int,
     max_previous: int,
+    max_words: int,
 ) -> tuple[str, int]:
     """
-    Return (markdown_block, num_prev_chapters) for the last N previous chapters.
+    Return (markdown_block, num_prev_chapters) for the last N previous chapters,
+    limited to approximately max_words words with sentence boundary awareness.
     """
     all_story_files = [
         p
@@ -539,7 +676,13 @@ def build_previous_chapters_block(
         return "(No previous chapters; this is the first one.)", 0
 
     all_story_files.sort(key=lambda p: chapter_num_from_name(p.name))
-    chosen = all_story_files[-max_previous:]
+
+    # If max_previous is 0, use word-based limiting from the most recent chapter
+    if max_previous == 0:
+        chosen = all_story_files[-1:] if all_story_files else []
+    else:
+        chosen = all_story_files[-max_previous:]
+
     blocks: List[str] = []
     for p in chosen:
         n = chapter_num_from_name(p.name)
@@ -548,7 +691,15 @@ def build_previous_chapters_block(
         if not re.match(r"^\s*#*\s*Chapter\s+", text, flags=re.IGNORECASE):
             blocks.append(f"# Chapter {n}\n\n")
         blocks.append(text)
+
     block_md = "\n\n\n---\n\n\n".join(blocks)
+
+    # Apply word limit with sentence boundary awareness if max_words > 0
+    if max_words > 0 and len(block_md.split()) > max_words:
+        # When using word-based limiting (max_previous == 0), take from the end
+        from_end = (max_previous == 0)
+        block_md = _truncate_to_word_limit_with_sentence_boundary(block_md, max_words, from_end=from_end)
+
     return block_md, len(chosen)
 
 
@@ -889,7 +1040,7 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     ensure_dir(project)
     ensure_dir(project / ".story")
-    for d in ("outline", "story", "logs"):
+    for d in ("outline", "story", "logs", "summary"):
         ensure_dir(project / d)
 
     # write config
@@ -903,10 +1054,15 @@ def cmd_init(args: argparse.Namespace) -> None:
             "outline_dir": "outline",
             "story_dir": "story",
             "logs_dir": "logs",
+            "summary_dir": "summary",
         },
         "context": {
-            "mode": "last_n",
-            "last_n": 10,
+            "mode": "last_n_chapters",
+            "last_n_chapters": 0,
+            "last_n_words": 300,
+        },
+        "summary": {
+            "max_words": 300,
         },
     }
     save_json(cfg_path, cfg)
@@ -971,6 +1127,11 @@ def cmd_init(args: argparse.Namespace) -> None:
     if not args.user_prompt:
         print("No user prompt set. Using default.")
         set_default_user_prompt(project)
+
+    # Always set default summary prompts (they're new)
+    print("Setting default summary prompts.")
+    set_default_summary_system_prompt(project)
+    set_default_summary_user_prompt(project)
 
 
 def cmd_title(project: Path, cfg: Dict[str, Any], new_title: Optional[str]) -> None:
@@ -1071,6 +1232,107 @@ def cmd_prepare(args: argparse.Namespace) -> None:
 # --------- Writing helpers (single chapter and next unwritten) ---------
 
 
+def _generate_chapter_summary(
+    *,
+    project: Path,
+    cfg: Dict[str, Any],
+    profile: Dict[str, Any],
+    story_dir: Path,
+    summary_dir: Path,
+    logs_dir: Path,
+    ch_num: int,
+) -> None:
+    """Generate and save a summary for the specified chapter."""
+    story_path = story_dir / f"ch{ch_num:02d}.md"
+    if not story_path.exists():
+        print(f"ERROR: Chapter {ch_num} does not exist for summarization", file=sys.stderr)
+        return
+
+    summary_path = summary_dir / f"ch{ch_num:02d}.md"
+    if summary_path.exists():
+        print(f"Summary for chapter {ch_num} already exists.")
+        return
+
+    # Get chapter content
+    chapter_content = read_text(story_path).strip()
+
+    # Get previous summary if it exists
+    prev_summary = ""
+    if ch_num > 1:
+        prev_summary_path = summary_dir / f"ch{ch_num-1:02d}.md"
+        if prev_summary_path.exists():
+            prev_summary = read_text(prev_summary_path).strip()
+
+    # Load summary prompts
+    summary_system_template = load_summary_system_prompt(project)
+    summary_user_template = load_summary_user_prompt(project)
+
+    # Get max words from config (default to 300)
+    max_words = cfg.get("summary", {}).get("max_words", 300)
+
+    title = cfg.get("title", "Untitled Story")
+    context = {
+        "title": title,
+        "chapter_count": ch_num,
+        "chapter_content": chapter_content,
+        "previous_summary": prev_summary,
+        "max_words": max_words,
+    }
+
+    summary_system_prompt = format_template(summary_system_template, **context)
+    summary_user_prompt = format_template(summary_user_template, **context)
+
+    messages = [
+        {"role": "system", "content": summary_system_prompt},
+        {"role": "user", "content": summary_user_prompt},
+    ]
+
+    # Log the summary prompt
+    write_text(
+        logs_dir / f"ch{ch_num:02d}.summary.prompt.md",
+        "Summary System Prompt:\n"
+        + summary_system_prompt
+        + "\n\nSummary User Prompt:\n"
+        + summary_user_prompt
+        + "\n",
+    )
+
+    print(f"Generating summary for chapter {ch_num}...")
+
+    # Generate summary
+    api_base = profile["api_base"]
+    api_key = profile["api_key"]
+    model = profile["model"]
+    parameters = profile["parameters"]
+
+    t_start = dt.datetime.now()
+    summary_text = chat_completion(
+        api_base=api_base,
+        api_key=api_key,
+        model=model,
+        messages=messages,
+        parameters=parameters,
+    )
+    t_end = dt.datetime.now()
+
+    print(f"Summary API call took {(t_end - t_start).total_seconds():.1f} seconds.")
+
+    # Save summary
+    write_text(summary_path, summary_text.strip())
+    print(f"Summary saved to {summary_path}")
+
+    # Log metadata
+    reqlog = {
+        "ts": now_iso(),
+        "chapter": ch_num,
+        "model": model,
+        "api_base": api_base,
+        "bytes": len(summary_text),
+        "type": "summary",
+    }
+    save_json(logs_dir / f"ch{ch_num:02d}.summary.request.json", reqlog)
+
+
 def _write_single_chapter(
     *,
     project: Path,
@@ -1078,6 +1340,7 @@ def _write_single_chapter(
     profile: Dict[str, Any],
     outline_dir: Path,
     story_dir: Path,
+    summary_dir: Path,
     logs_dir: Path,
     ch_num: int,
     fix_mode: str,
@@ -1096,13 +1359,37 @@ def _write_single_chapter(
         # Already written chapter – we still run validation/fix on it
         print(f"Chapter {ch_num} already written at: {story_path}")
     else:
-        # Compute previous chapters block
+        # Check for previous chapter and ensure it has a summary
+        prev_chapter_num = ch_num - 1
+        previous_summary = ""
+        if prev_chapter_num > 0:
+            prev_summary_path = summary_dir / f"ch{prev_chapter_num:02d}.md"
+            if not prev_summary_path.exists():
+                # Previous chapter exists but no summary - generate it first
+                prev_story_path = story_dir / f"ch{prev_chapter_num:02d}.md"
+                if prev_story_path.exists():
+                    print(f"Previous chapter {prev_chapter_num} exists but has no summary. Generating summary first...")
+                    _generate_chapter_summary(
+                        project=project,
+                        cfg=cfg,
+                        profile=profile,
+                        story_dir=story_dir,
+                        summary_dir=summary_dir,
+                        logs_dir=logs_dir,
+                        ch_num=prev_chapter_num,
+                    )
+            # Load the summary (either just generated or pre-existing)
+            if prev_summary_path.exists():
+                previous_summary = read_text(prev_summary_path).strip()
+
+        # Compute recent context (word-limited)
         context_cfg = cfg.get("context", {})
-        max_prev = int(context_cfg.get("last_n", 3))
-        prev_block, num_prev = build_previous_chapters_block(
+        last_n_words = int(context_cfg.get("last_n_words", 300))
+        recent_context, _ = build_previous_chapters_block(
             story_dir=story_dir,
             current_chapter=ch_num,
-            max_previous=max_prev,
+            max_previous=0,  # Always use most recent chapter
+            max_words=last_n_words,
         )
 
         # Build prompts
@@ -1114,8 +1401,9 @@ def _write_single_chapter(
             "title": title,
             "chapter_count": ch_num,
             "chapter_outline": chapter_outline or "(empty)",
-            "previous_chapters": prev_block,
-            "num_prev_chapters": num_prev,
+            "previous_summary": previous_summary or "(No previous chapter)",
+            "recent_context": recent_context,
+            "last_n_words": last_n_words,
         }
 
         system_prompt = format_template(system_template, **context)
@@ -1195,6 +1483,17 @@ def _write_single_chapter(
         fix_mode=fix_mode,
     )
 
+    # Generate chapter summary
+    _generate_chapter_summary(
+        project=project,
+        cfg=cfg,
+        profile=profile,
+        story_dir=story_dir,
+        summary_dir=summary_dir,
+        logs_dir=logs_dir,
+        ch_num=ch_num,
+    )
+
     return True
 
 
@@ -1210,8 +1509,9 @@ def cmd_write(args: argparse.Namespace) -> None:
 
     outline_dir = project / cfg["paths"]["outline_dir"]
     story_dir = project / cfg["paths"]["story_dir"]
+    summary_dir = project / cfg["paths"]["summary_dir"]
     logs_dir = project / cfg["paths"]["logs_dir"]
-    for d in (outline_dir, story_dir, logs_dir):
+    for d in (outline_dir, story_dir, summary_dir, logs_dir):
         ensure_dir(d)
 
     profile = load_profile(project)
@@ -1262,6 +1562,7 @@ def cmd_write(args: argparse.Namespace) -> None:
             profile=profile,
             outline_dir=outline_dir,
             story_dir=story_dir,
+            summary_dir=summary_dir,
             logs_dir=logs_dir,
             ch_num=ch_num,
             fix_mode=args.fix_mode,
@@ -1343,6 +1644,62 @@ def cmd_user_prompt(project: Path, provided_path: str) -> None:
         print("Created new user prompt.")
 
 
+def cmd_summary_system_prompt(project: Path, provided_path: str) -> None:
+    ssp_path = project / ".story" / SUMMARY_SYSTEM_PROMPT_FILENAME
+    already_exists = ssp_path.exists()
+
+    if provided_path == "default":
+        set_default_summary_system_prompt(project)
+    else:
+        source_ssp_path = Path(provided_path)
+        if source_ssp_path.exists():
+            write_text(ssp_path, read_text(source_ssp_path))
+        else:
+            print(
+                f"ERROR: Provided summary system prompt path not found:\n  {source_ssp_path}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    if already_exists:
+        print("Replaced existing summary system prompt.")
+    else:
+        print("Created new summary system prompt.")
+
+
+def cmd_summary_user_prompt(project: Path, provided_path: str) -> None:
+    sup_path = project / ".story" / SUMMARY_USER_PROMPT_FILENAME
+    already_exists = sup_path.exists()
+
+    if provided_path == "default":
+        set_default_summary_user_prompt(project)
+    else:
+        source_sup_path = Path(provided_path)
+        if source_sup_path.exists():
+            write_text(sup_path, read_text(source_sup_path))
+        else:
+            print(
+                f"ERROR: Provided summary user prompt path not found:\n  {source_sup_path}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    if already_exists:
+        print("Replaced existing summary user prompt.")
+    else:
+        print("Created new summary user prompt.")
+
+
+def cmd_summary_max_words(project: Path, cfg: Dict[str, Any], max_words: int) -> None:
+    cfg_path = project / ".story" / "config.json"
+    if "summary" not in cfg:
+        cfg["summary"] = {}
+    old_max_words = cfg["summary"].get("max_words", 300)
+    cfg["summary"]["max_words"] = max_words
+    save_json(cfg_path, cfg)
+    print(f"Updated summary max words from {old_max_words} to {max_words}.")
+
+
 # ============================== CLI ==============================
 
 
@@ -1376,6 +1733,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--system-prompt", help="Path to custom system prompt (for --init)")
     p.add_argument("--user-prompt", help="Path to custom user prompt (for --init)")
+    p.add_argument("--summary-system-prompt", help="Path to custom summary system prompt (for --init)")
+    p.add_argument("--summary-user-prompt", help="Path to custom summary user prompt (for --init)")
+    p.add_argument("--summary-max-words", type=int, help="Maximum words for chapter summaries (default: 300)")
     p.add_argument(
         "--profile",
         help="Optional JSON profile (api_base, api_key_env, model, ...)",
@@ -1451,6 +1811,15 @@ def main() -> None:
     if args.user_prompt:
         did_something = True
         cmd_user_prompt(project, args.user_prompt)
+    if args.summary_system_prompt:
+        did_something = True
+        cmd_summary_system_prompt(project, args.summary_system_prompt)
+    if args.summary_user_prompt:
+        did_something = True
+        cmd_summary_user_prompt(project, args.summary_user_prompt)
+    if args.summary_max_words:
+        did_something = True
+        cmd_summary_max_words(project, cfg, args.summary_max_words)
 
     if args.reset:
         did_something = True

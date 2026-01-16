@@ -87,7 +87,7 @@ project/
 2. **Outline Preparation**: `--prepare` parses `chapter_outline.md` using `parse_master_outline()` which recognizes chapter headings in format `# Chapter N` (supports digits and English number words)
 3. **Chapter Writing**: `--write` uses `_write_single_chapter()` which:
    - Loads chapter outline from `outline/chNN.md`
-   - Builds context from previous chapters (configurable via `context.last_n` in config)
+   - Builds context from previous chapters (configurable via `context.last_n_chapters` and `context.last_n_words` in config)
    - Formats system/user prompts using template substitution
    - Calls `chat_completion()` to generate chapter
    - Automatically runs validation via `validate_chapter.validate_file()`
@@ -130,8 +130,8 @@ Validation checks (in `validate_chapter.py`):
 ### Context Management
 
 The `build_previous_chapters_block()` function handles context window management:
-- Controlled by `config.json`: `context.mode` and `context.last_n`
-- Default: last 10 chapters
+- Controlled by `config.json`: `context.last_n_chapters` and `context.last_n_words`
+- Default: 0 chapters + last 300 words from most recent chapter (sentence-aware, from end)
 - Returns formatted markdown block with separator `---` between chapters
 - Ensures chapter titles are included for context
 
@@ -139,7 +139,7 @@ The `build_previous_chapters_block()` function handles context window management
 
 Prompts support variable substitution via `format_template()`:
 - Uses `_SafeFormatDict` to preserve unknown placeholders
-- Available variables: `{title}`, `{chapter_count}`, `{chapter_outline}`, `{previous_chapters}`, `{num_prev_chapters}`
+- Available variables: `{title}`, `{chapter_count}`, `{chapter_outline}`, `{previous_summary}`, `{recent_context}`, `{last_n_words}`
 - System/user prompts are stored separately and can be customized per project
 
 ## Development Notes
