@@ -1059,10 +1059,10 @@ def cmd_init(args: argparse.Namespace) -> None:
         "context": {
             "mode": "last_n_chapters",
             "last_n_chapters": 0,
-            "last_n_words": 300,
+            "last_n_words": 500,
         },
         "summary": {
-            "max_words": 300,
+            "max_words": 500,
         },
     }
     save_json(cfg_path, cfg)
