@@ -5,8 +5,9 @@ auto_writer.py — simplified semi-automatic long-form story writer.
 
 Git-like commands:
 
-  --init    PATH --title "Title"
-      Initialize a story directory with .story metadata.
+   --init [--path PATH] --title "Title" [--profile PATH] ...
+      Initialize a story directory with .story metadata. If --path and --title are both provided,
+      creates a subdirectory named after the sanitized title.
 
   --prepare [PATH]
       Parse chapter_outline.md -> outline/chNN.md files.
@@ -59,14 +60,13 @@ import json
 import os
 import re
 import sys
+import unicodedata as ud
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-import unicodedata as ud
 
 import validate_chapter as vc
-
 
 # ============================== Utilities ==============================
 
@@ -342,7 +342,7 @@ in a way that feels natural and believable.
 # Previous chapter summary
 {previous_summary}
 
-# Recent context (last ~{last_n_words} words of the previous chapter)
+# {context_label}
 {recent_context}
 """
 
@@ -598,7 +598,9 @@ def load_profile(project: Path) -> Dict[str, Any]:
     }
 
 
-def _truncate_to_word_limit_with_sentence_boundary(text: str, max_words: int, from_end: bool = False) -> str:
+def _truncate_to_word_limit_with_sentence_boundary(
+    text: str, max_words: int, from_end: bool = False
+) -> str:
     """
     Truncate text to approximately max_words words, but ensure we end/start at a sentence boundary.
 
@@ -615,7 +617,8 @@ def _truncate_to_word_limit_with_sentence_boundary(text: str, max_words: int, fr
         # For extracting from the end: split into sentences, then take the last sentences
         # that fit within max_words
         import re
-        sentences = re.split(r'(?<=[.!?…]) +', text.strip())
+
+        sentences = re.split(r"(?<=[.!?…]) +", text.strip())
 
         # Start from the end and accumulate sentences until we hit the word limit
         selected_sentences = []
@@ -650,7 +653,7 @@ def _truncate_to_word_limit_with_sentence_boundary(text: str, max_words: int, fr
 
         if last_sentence_end > 0:
             # Include the sentence-ending punctuation
-            return truncated_text[:last_sentence_end + 1]
+            return truncated_text[: last_sentence_end + 1]
 
         # If no sentence boundary found, just return the word-limited text
         return truncated_text + "..."
@@ -697,12 +700,12 @@ def build_previous_chapters_block(
     # Apply word limit with sentence boundary awareness if max_words > 0
     if max_words > 0 and len(block_md.split()) > max_words:
         # When using word-based limiting (max_previous == 0), take from the end
-        from_end = (max_previous == 0)
-        block_md = _truncate_to_word_limit_with_sentence_boundary(block_md, max_words, from_end=from_end)
+        from_end = max_previous == 0
+        block_md = _truncate_to_word_limit_with_sentence_boundary(
+            block_md, max_words, from_end=from_end
+        )
 
     return block_md, len(chosen)
-
-
 
 
 def build_validation_summary(errors: List[Tuple[int, str]]) -> str:
@@ -719,7 +722,10 @@ def _should_group_issues_together(issues1: List[str], issues2: List[str]) -> boo
 
     # Auto-wrapped text should always be grouped
     for issue in all_issues:
-        if "auto-wrapped" in issue.lower() or "inconsistent line breaks" in issue.lower():
+        if (
+            "auto-wrapped" in issue.lower()
+            or "inconsistent line breaks" in issue.lower()
+        ):
             return True
 
     # "Line too long" issues can be grouped (may be same paragraph)
@@ -842,7 +848,9 @@ def run_validation_and_maybe_fix(
 
         # Build user-prompt with all blocks and their issues
         lines_desc_parts: list[str] = []
-        for idx, (line_range, issue_msgs, original_block) in enumerate(blocks_to_fix, start=1):
+        for idx, (line_range, issue_msgs, original_block) in enumerate(
+            blocks_to_fix, start=1
+        ):
             # Format the line range description
             if len(line_range) == 1:
                 desc = f"line {line_range.start}"
@@ -954,7 +962,9 @@ def run_validation_and_maybe_fix(
         print(f"Applied {len(blocks_to_fix)} block-level fix(es) to chapter {ch_num}.")
 
         # Determine if we used block-based fixing (multi-line blocks)
-        has_multi_line_blocks = any(len(block_range) > 1 for block_range, _, _ in blocks_to_fix)
+        has_multi_line_blocks = any(
+            len(block_range) > 1 for block_range, _, _ in blocks_to_fix
+        )
 
         fixlog = {
             "ts": now_iso(),
@@ -1030,8 +1040,7 @@ def run_validation_and_maybe_fix(
 # ============================== Commands ==============================
 
 
-def cmd_init(args: argparse.Namespace) -> None:
-    project = detect_project_dir(args.path)
+def cmd_init(args: argparse.Namespace, project: Path) -> None:
 
     # check if already initialized
     if (project / ".story" / "config.json").exists():
@@ -1058,11 +1067,11 @@ def cmd_init(args: argparse.Namespace) -> None:
         },
         "context": {
             "mode": "last_n_chapters",
-            "last_n_chapters": 0,
+            "last_n_chapters": 3,
             "last_n_words": 500,
         },
         "summary": {
-            "max_words": 500,
+            "max_words": 300,
         },
     }
     save_json(cfg_path, cfg)
@@ -1089,34 +1098,24 @@ def cmd_init(args: argparse.Namespace) -> None:
             "\n"
             "Define your characters here for consistent image generation.\n"
             "Use physical descriptions only - SDXL doesn't understand names.\n"
+            "Follow the exact format below:\n"
             "\n"
-            "## Example Format\n"
-            "\n"
-            "### Character Name (for your reference only)\n"
-            "- Hair: long, wavy, dark brown\n"
-            "- Eyes: green, almond-shaped\n"
-            "- Skin: fair, light freckles\n"
-            "- Body: slim, average height\n"
-            "- Age: mid-20s\n"
-            "- Distinguishing features: small scar on left cheek\n"
+            "### Character Name\n"
+            "base_tags: photorealistic, solo, female, long wavy dark brown hair, green almond-shaped eyes, fair skin with light freckles, slim average height, mid-20s, small scar on left cheek\n"
+            "base_negative: ugly, deformed, bad anatomy, extra limbs, text, signature, watermark\n"
             "\n"
             "### Another Character\n"
-            "- Hair: short, black, curly\n"
-            "- Eyes: brown\n"
-            "- Body: muscular, tall\n"
-            "- Age: early 30s\n"
-            "\n"
-            "---\n"
-            "\n"
-            "Add your characters below:\n"
-            "\n"
+            "base_tags: photorealistic, solo, male, short curly black hair, brown eyes, muscular tall, early 30s\n"
+            "base_negative: ugly, deformed, bad anatomy, extra limbs, text, signature, watermark\n"
             "\n",
         )
 
     print(f"Initialized story repo at: {project}")
 
     # Profile and prompts
-    if not args.profile:
+    if args.profile:
+        cmd_profile(project, args.profile)
+    else:
         print(
             "WARNING: No profile provided. Set one with\n"
             "  auto_writer --profile <path>."
@@ -1245,7 +1244,9 @@ def _generate_chapter_summary(
     """Generate and save a summary for the specified chapter."""
     story_path = story_dir / f"ch{ch_num:02d}.md"
     if not story_path.exists():
-        print(f"ERROR: Chapter {ch_num} does not exist for summarization", file=sys.stderr)
+        print(
+            f"ERROR: Chapter {ch_num} does not exist for summarization", file=sys.stderr
+        )
         return
 
     summary_path = summary_dir / f"ch{ch_num:02d}.md"
@@ -1368,7 +1369,9 @@ def _write_single_chapter(
                 # Previous chapter exists but no summary - generate it first
                 prev_story_path = story_dir / f"ch{prev_chapter_num:02d}.md"
                 if prev_story_path.exists():
-                    print(f"Previous chapter {prev_chapter_num} exists but has no summary. Generating summary first...")
+                    print(
+                        f"Previous chapter {prev_chapter_num} exists but has no summary. Generating summary first..."
+                    )
                     _generate_chapter_summary(
                         project=project,
                         cfg=cfg,
@@ -1382,14 +1385,24 @@ def _write_single_chapter(
             if prev_summary_path.exists():
                 previous_summary = read_text(prev_summary_path).strip()
 
-        # Compute recent context (word-limited)
+        # Compute recent context based on mode
         context_cfg = cfg.get("context", {})
-        last_n_words = int(context_cfg.get("last_n_words", 300))
+        mode = context_cfg.get("mode", "last_n_words")
+        if mode == "last_n_chapters":
+            max_previous = int(context_cfg.get("last_n_chapters", 3))
+            max_words = 0  # No word limit
+            context_label = f"Previous {max_previous} chapters"
+        else:  # Default to last_n_words
+            max_previous = 0
+            max_words = int(context_cfg.get("last_n_words", 500))
+            context_label = (
+                f"Recent context (last ~{max_words} words of the previous chapter)"
+            )
         recent_context, _ = build_previous_chapters_block(
             story_dir=story_dir,
             current_chapter=ch_num,
-            max_previous=0,  # Always use most recent chapter
-            max_words=last_n_words,
+            max_previous=max_previous,
+            max_words=max_words,
         )
 
         # Build prompts
@@ -1403,7 +1416,7 @@ def _write_single_chapter(
             "chapter_outline": chapter_outline or "(empty)",
             "previous_summary": previous_summary or "(No previous chapter)",
             "recent_context": recent_context,
-            "last_n_words": last_n_words,
+            "context_label": context_label,
         }
 
         system_prompt = format_template(system_template, **context)
@@ -1733,9 +1746,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--system-prompt", help="Path to custom system prompt (for --init)")
     p.add_argument("--user-prompt", help="Path to custom user prompt (for --init)")
-    p.add_argument("--summary-system-prompt", help="Path to custom summary system prompt (for --init)")
-    p.add_argument("--summary-user-prompt", help="Path to custom summary user prompt (for --init)")
-    p.add_argument("--summary-max-words", type=int, help="Maximum words for chapter summaries (default: 300)")
+    p.add_argument(
+        "--summary-system-prompt",
+        help="Path to custom summary system prompt (for --init)",
+    )
+    p.add_argument(
+        "--summary-user-prompt", help="Path to custom summary user prompt (for --init)"
+    )
+    p.add_argument(
+        "--summary-max-words",
+        type=int,
+        help="Maximum words for chapter summaries (default: 300)",
+    )
     p.add_argument(
         "--profile",
         help="Optional JSON profile (api_base, api_key_env, model, ...)",
@@ -1780,14 +1802,22 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
 
+    project = None
     if args.init:
         if not args.title:
             print("ERROR: --init requires --title", file=sys.stderr)
             sys.exit(1)
-        cmd_init(args)
-        return
+        if args.path and args.title:
+            base_path = Path(args.path).resolve()
+            import re
 
-    project = detect_project_dir(args.path)
+            title_sanitized = re.sub(r"[^\w\-_]", "_", args.title)
+            project = base_path / title_sanitized
+        else:
+            project = detect_project_dir(args.path)
+        cmd_init(args, project)
+    else:
+        project = detect_project_dir(args.path)
     cfg_path = project / ".story" / "config.json"
     cfg = load_json(cfg_path, {})
     if not cfg:
@@ -1820,6 +1850,9 @@ def main() -> None:
     if args.summary_max_words:
         did_something = True
         cmd_summary_max_words(project, cfg, args.summary_max_words)
+
+    if args.init:
+        return  # do not allow other commands with --init
 
     if args.reset:
         did_something = True
