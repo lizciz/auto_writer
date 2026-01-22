@@ -200,6 +200,7 @@ def chat_completion(
     messages: List[Dict[str, str]],
     parameters: Optional[Dict[str, Any]] = None,
     timeout: int = 1800,
+    chapter_num: Optional[int] = None,
 ) -> str:
     """
     Thin wrapper over /chat/completions compatible APIs.
@@ -212,7 +213,27 @@ def chat_completion(
     resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
     if resp.status_code != 200:
         raise RuntimeError(f"API error {resp.status_code}: {resp.text[:900]}")
-    data = resp.json()
+    try:
+        data = resp.json()
+    except requests.exceptions.JSONDecodeError as e:
+        # Log error details
+        if chapter_num is not None:
+            error_path = Path(".") / "logs" / f"ch{chapter_num:02d}.api_error.md"
+            error_content = f"""# API Error Details
+
+**Timestamp:** {dt.datetime.now().isoformat()}
+
+**Status Code:** {resp.status_code}
+
+**Response Text:**
+```
+{resp.text}
+```
+
+**Error:** {str(e)}
+"""
+            write_text(error_path, error_content)
+        raise e
     try:
         return data["choices"][0]["message"]["content"].strip()
     except Exception:
@@ -916,6 +937,7 @@ def run_validation_and_maybe_fix(
             model=model,
             messages=fix_messages,
             parameters=parameters,
+            chapter_num=ch_num,
         )
         t_end = dt.datetime.now()
         print(
@@ -1018,6 +1040,7 @@ def run_validation_and_maybe_fix(
         model=model,
         messages=fix_messages,
         parameters=parameters,
+        chapter_num=ch_num,
     )
     t_end = dt.datetime.now()
     print(f"Full-fix API call took {(t_end - t_start).total_seconds():.1f} seconds.")
@@ -1313,6 +1336,7 @@ def _generate_chapter_summary(
         model=model,
         messages=messages,
         parameters=parameters,
+        chapter_num=ch_num,
     )
     t_end = dt.datetime.now()
 
@@ -1452,6 +1476,7 @@ def _write_single_chapter(
             model=model,
             messages=messages,
             parameters=parameters,
+            chapter_num=ch_num,
         )
         t_end = dt.datetime.now()
         print(f"API call took {(t_end - t_start).total_seconds():.1f} seconds.")
