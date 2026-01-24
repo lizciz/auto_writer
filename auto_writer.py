@@ -5,9 +5,9 @@ auto_writer.py — simplified semi-automatic long-form story writer.
 
 Git-like commands:
 
-   --init [--path PATH] --title "Title" [--profile PATH] ...
-      Initialize a story directory with .story metadata. If --path and --title are both provided,
-      creates a subdirectory named after the sanitized title.
+   --init [--path PATH] [--dir DIR] --title "Title" [--profile PATH] ...
+      Initialize a story directory with .story metadata. Creates a subdirectory named after
+      the sanitized title (or --dir if provided) under --path (defaults to current directory).
 
   --prepare [PATH]
       Parse chapter_outline.md -> outline/chNN.md files.
@@ -111,6 +111,17 @@ def save_json(p: Path, data: Any) -> None:
 
 def list_chapter_files(chapter_dir: Path) -> List[Path]:
     return sorted(chapter_dir.glob("ch*.md"))
+
+
+def sanitize_dirname(s: str) -> str:
+    """Sanitize a string to be safe for use as a directory name."""
+    # Normalize unicode to ASCII
+    s = ud.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii')
+    # Replace filesystem-unsafe characters with spaces
+    s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', ' ', s)
+    # Collapse multiple spaces
+    s = re.sub(r' +', ' ', s)
+    return s.strip()
 
 
 def find_first_chapter_num(chapter_dir: Path) -> int:
@@ -1758,8 +1769,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write next (or specific) chapter",
     )
-    p.add_argument("--path", help="Story directory (default: CWD)")
-    p.add_argument("--title", help="Required for --init")
+    p.add_argument("--path", help="Parent directory where to create the story directory (default: CWD)")
+    p.add_argument("--title", help="Story title (used for directory name if --dir not provided)")
+    p.add_argument("--dir", help="Explicit name for the story directory (overrides title-based name)")
     p.add_argument(
         "--chapter",
         type=int,
@@ -1832,14 +1844,9 @@ def main() -> None:
         if not args.title:
             print("ERROR: --init requires --title", file=sys.stderr)
             sys.exit(1)
-        if args.path and args.title:
-            base_path = Path(args.path).resolve()
-            import re
-
-            title_sanitized = re.sub(r"[^\w\-_]", "_", args.title)
-            project = base_path / title_sanitized
-        else:
-            project = detect_project_dir(args.path)
+        base_path = Path(args.path).resolve() if args.path else Path.cwd()
+        dir_name = sanitize_dirname(args.dir) if args.dir else sanitize_dirname(args.title)
+        project = base_path / dir_name
         cmd_init(args, project)
     else:
         project = detect_project_dir(args.path)
