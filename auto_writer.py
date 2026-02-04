@@ -16,6 +16,8 @@ Git-like commands:
       Write next (or specific) chapter using an OpenAI-compatible API.
       With --loop, keeps writing subsequent unwritten chapters until
       all are done or --max-writes is reached.
+      With --retry N, retries up to N times if output is too small
+      (indicating an API error or content refusal).
 
   --reset   all|N
       Remove generated chapter(s), including logs.
@@ -70,7 +72,11 @@ import validate_chapter as vc
 
 # ============================== Utilities ==============================
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
+
+# Minimum character count for a valid chapter output.
+# Outputs smaller than this are assumed to be errors/refusals.
+MIN_CHAPTER_SIZE = 500
 
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 USER_PROMPT_FILENAME = "user_prompt.md"
@@ -116,11 +122,11 @@ def list_chapter_files(chapter_dir: Path) -> List[Path]:
 def sanitize_dirname(s: str) -> str:
     """Sanitize a string to be safe for use as a directory name."""
     # Normalize unicode to ASCII
-    s = ud.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii')
+    s = ud.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
     # Replace filesystem-unsafe characters with spaces
-    s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', ' ', s)
+    s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", s)
     # Collapse multiple spaces
-    s = re.sub(r' +', ' ', s)
+    s = re.sub(r" +", " ", s)
     return s.strip()
 
 
@@ -1127,21 +1133,31 @@ def cmd_init(args: argparse.Namespace, project: Path) -> None:
     if not characters.exists():
         write_text(
             characters,
-            "\n"
-            "# Character Profiles\n"
-            "\n"
-            "Define your characters here for consistent image generation.\n"
-            "Use physical descriptions only - SDXL doesn't understand names.\n"
-            "Follow the exact format below:\n"
-            "\n"
-            "### Character Name\n"
-            "base_tags: photorealistic, solo, female, long wavy dark brown hair, green almond-shaped eyes, fair skin with light freckles, slim average height, mid-20s, small scar on left cheek\n"
-            "base_negative: ugly, deformed, bad anatomy, extra limbs, text, signature, watermark\n"
-            "\n"
-            "### Another Character\n"
-            "base_tags: photorealistic, solo, male, short curly black hair, brown eyes, muscular tall, early 30s\n"
-            "base_negative: ugly, deformed, bad anatomy, extra limbs, text, signature, watermark\n"
-            "\n",
+            (
+                "Finally, please create SDXL tags for the characters, "
+                "matching their character profiles, for consistent image "
+                "generation. Use danbooru-style tags that SDXL understands "
+                "rather than natural language sentances. Use base physical "
+                "descriptions only that capture the character's physical "
+                "body. Do not include traits that change between scenes; Do "
+                "not include e.g. mood, expression, clothes, location, etc. "
+                "unless they are consistent throughout the whole story.\n"
+                "Follow the exact format below:\n"
+                "\n"
+                "### Character Name\n"
+                "base_tags: photorealistic, female, long wavy dark brown "
+                "hair, green eyes, fair skin with light freckles, slim "
+                "average height, mid-20s, full lips, curvy hourglass figure, "
+                "huge breasts, round bubble butt,\n"
+                "base_negative: ugly, deformed, bad anatomy, extra limbs, "
+                "text, signature, watermark\n"
+                "\n"
+                "### Another Character\n"
+                "base_tags: photorealistic, male, short curly black hair, "
+                "brown eyes, muscular tall, early 30s\n"
+                "base_negative: ugly, deformed, bad anatomy, extra limbs, "
+                "text, signature, watermark\n"
+            ),
         )
 
     print(f"Initialized story repo at: {project}")
@@ -1380,11 +1396,19 @@ def _write_single_chapter(
     logs_dir: Path,
     ch_num: int,
     fix_mode: str,
-) -> bool:
+) -> str:
+    """
+    Write a single chapter.
+
+    Returns:
+        "ok" - chapter written successfully
+        "too_small" - output was too small (likely error/refusal), can retry
+        "error" - other error, should abort
+    """
     outline_path = outline_dir / f"ch{ch_num:02d}.md"
     if not outline_path.exists():
         print(f"ERROR: Outline not found: {outline_path}", file=sys.stderr)
-        return False
+        return "error"
 
     chapter_outline = read_text(outline_path).strip()
     story_path = story_dir / outline_path.name
@@ -1491,10 +1515,24 @@ def _write_single_chapter(
         )
         t_end = dt.datetime.now()
         print(f"API call took {(t_end - t_start).total_seconds():.1f} seconds.")
+        print(f"Received {len(chapter_md)} characters from API.")
+
+        # Check if output is too small (likely an error or refusal)
+        if len(chapter_md) < MIN_CHAPTER_SIZE:
+            print(
+                f"WARNING: Output too small ({len(chapter_md)} chars < {MIN_CHAPTER_SIZE}). "
+                "This may indicate an API error or content refusal.",
+                file=sys.stderr,
+            )
+            # Log the failed output for debugging
+            fail_log_path = logs_dir / f"ch{ch_num:02d}.failed_output.md"
+            write_text(fail_log_path, chapter_md)
+            print(f"Failed output saved to: {fail_log_path}")
+            return "too_small"
+
         # remove leading '#' from chapter title if any
         cleaned = chapter_md.lstrip("#").strip() + "\n"
         write_text(story_path, cleaned)
-        print(f"Received {len(chapter_md)} bytes from API.")
 
         # log (lightweight, omit full prompt for brevity)
         reqlog = {
@@ -1543,7 +1581,7 @@ def _write_single_chapter(
         ch_num=ch_num,
     )
 
-    return True
+    return "ok"
 
 
 def cmd_write(args: argparse.Namespace) -> None:
@@ -1603,23 +1641,41 @@ def cmd_write(args: argparse.Namespace) -> None:
         chapters_to_process = [start_ch]
 
     writes_done = 0
+    max_retries = args.retry
 
     for ch_num in chapters_to_process:
-        ok = _write_single_chapter(
-            project=project,
-            cfg=cfg,
-            profile=profile,
-            outline_dir=outline_dir,
-            story_dir=story_dir,
-            summary_dir=summary_dir,
-            logs_dir=logs_dir,
-            ch_num=ch_num,
-            fix_mode=args.fix_mode,
-        )
-        if not ok:
-            break
+        attempt = 0
+        while True:
+            result = _write_single_chapter(
+                project=project,
+                cfg=cfg,
+                profile=profile,
+                outline_dir=outline_dir,
+                story_dir=story_dir,
+                summary_dir=summary_dir,
+                logs_dir=logs_dir,
+                ch_num=ch_num,
+                fix_mode=args.fix_mode,
+            )
 
-        writes_done += 1
+            if result == "ok":
+                writes_done += 1
+                break
+            elif result == "too_small":
+                attempt += 1
+                if attempt <= max_retries:
+                    print(f"Retrying chapter {ch_num} (attempt {attempt}/{max_retries})...")
+                else:
+                    print(
+                        f"ERROR: Chapter {ch_num} failed after {max_retries} retries. Aborting.",
+                        file=sys.stderr,
+                    )
+                    print(f"Performed {writes_done} write operation(s).")
+                    return
+            else:  # "error"
+                print(f"Performed {writes_done} write operation(s).")
+                return
+
         if args.max_writes is not None and writes_done >= args.max_writes:
             break
 
@@ -1769,9 +1825,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write next (or specific) chapter",
     )
-    p.add_argument("--path", help="Parent directory where to create the story directory (default: CWD)")
-    p.add_argument("--title", help="Story title (used for directory name if --dir not provided)")
-    p.add_argument("--dir", help="Explicit name for the story directory (overrides title-based name)")
+    p.add_argument(
+        "--path",
+        help="Parent directory where to create the story directory (default: CWD)",
+    )
+    p.add_argument(
+        "--title", help="Story title (used for directory name if --dir not provided)"
+    )
+    p.add_argument(
+        "--dir",
+        help="Explicit name for the story directory (overrides title-based name)",
+    )
     p.add_argument(
         "--chapter",
         type=int,
@@ -1832,6 +1896,16 @@ def build_parser() -> argparse.ArgumentParser:
             "'full' rewrites the whole chapter. Default: quick."
         ),
     )
+    p.add_argument(
+        "--retry",
+        type=int,
+        default=0,
+        help=(
+            "Maximum number of retries when the API returns an output that is "
+            f"too small (< {MIN_CHAPTER_SIZE} characters), indicating a likely "
+            "error or content refusal. Default: 0 (no retries)."
+        ),
+    )
 
     return p
 
@@ -1845,7 +1919,9 @@ def main() -> None:
             print("ERROR: --init requires --title", file=sys.stderr)
             sys.exit(1)
         base_path = Path(args.path).resolve() if args.path else Path.cwd()
-        dir_name = sanitize_dirname(args.dir) if args.dir else sanitize_dirname(args.title)
+        dir_name = (
+            sanitize_dirname(args.dir) if args.dir else sanitize_dirname(args.title)
+        )
         project = base_path / dir_name
         cmd_init(args, project)
     else:
