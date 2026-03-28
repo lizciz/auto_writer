@@ -900,7 +900,7 @@ def run_validation_and_maybe_fix(
             issue_str = "; ".join(unique_issues)
 
             lines_desc_parts.append(
-                f"[{idx}] {desc}: issues: {issue_str}\n" f"Original:\n{original_block}"
+                f"[{idx}] {desc}: issues: {issue_str}\nOriginal:\n{original_block}"
             )
         lines_desc = "\n\n".join(lines_desc_parts)
 
@@ -1134,29 +1134,44 @@ def cmd_init(args: argparse.Namespace, project: Path) -> None:
         write_text(
             characters,
             (
-                "Finally, please create SDXL tags for the characters, "
-                "matching their character profiles, for consistent image "
-                "generation. Use danbooru-style tags that SDXL understands "
-                "rather than natural language sentances. Use base physical "
-                "descriptions only that capture the character's physical "
-                "body. Do not include traits that change between scenes; Do "
-                "not include e.g. mood, expression, clothes, location, etc. "
-                "unless they are consistent throughout the whole story.\n"
-                "Follow the exact format below:\n"
-                "\n"
-                "### Character Name\n"
-                "base_tags: photorealistic, female, long wavy dark brown "
-                "hair, green eyes, fair skin with light freckles, slim "
-                "average height, mid-20s, full lips, curvy hourglass figure, "
-                "huge breasts, round bubble butt,\n"
-                "base_negative: ugly, deformed, bad anatomy, extra limbs, "
-                "text, signature, watermark\n"
-                "\n"
-                "### Another Character\n"
-                "base_tags: photorealistic, male, short curly black hair, "
-                "brown eyes, muscular tall, early 30s\n"
-                "base_negative: ugly, deformed, bad anatomy, extra limbs, "
-                "text, signature, watermark\n"
+                """
+Finally, please create SDXL tags for the characters, matching their character profiles, for consistent image generation. Use danbooru-style tags that SDXL understands rather than natural language sentences. Use base physical descriptions only that capture the character's physical body. Do not include traits that change between scenes; Do not include e.g. mood, expression, clothes, location.
+Follow the exact format as in the examples below:
+
+### Callahan
+description: A shy but fit young man with an average build and "boy next door" charm.
+base_tags: 1boy, solo, short dark brown hair, brown eyes, average height, fit body, clean shaven, detailed face, handsome, handsome face, detailed eyes
+base_negative: female, 1girl
+
+### Elara
+description: A petite and shy woman with a "baby face," blonde hair, blue eyes, and large soft breasts.
+base_tags: 1girl, solo, blonde hair, blue eyes, fair skin, cute face, baby face, full lips, slim body, petite body, small stature, huge breasts, soft natural breasts, massive breasts, small waist, wide hips, shy
+base_negative: fat, small breasts
+
+### Chloe
+description: An athletic brunette with a high ponytail, hazel eyes, and a toned body with thick muscular thighs.
+base_tags: 1girl, solo, brunette hair, high ponytail, hazel eyes, full lips, tan skin, athletic body, toned muscles, six pack abs, large breasts, E-cup, firm breasts, round breasts, small waist, thick thighs, tall girl, detailed eyes
+base_negative: fat, small breasts
+
+### Victoria
+description: A statuesque mature woman with red hair, blue eyes, and a massive chest.
+base_tags: 1girl, solo, red hair, blue eyes, fair skin, mature face, sharp eyes, thick lips, hourglass body shape, huge breasts, FF-cup, massive breasts, wide hips, thick thighs, small waist
+base_negative: fat, small breasts
+
+### Jasmine
+description: An exotic woman with black hair, dark green eyes, and massive natural breasts with large nipples.
+base_tags: 1girl, solo, black hair, dark green eyes, exotic beauty, thick pouty lips, fair skin, huge breasts, G-cup, massive natural breasts, large areolae, large nipples, small waist, wide hips, thick thighs
+base_negative: fat, small breasts
+
+### Raven
+description: An edgy rebel with dark hair with pink streaks shaved on the sides, heterochromia, and a lip piercing.
+base_tags: 1girl, solo, black and pink hair, goth look, undercut, full lips, dark purple lip gloss, heterochromia, one eye blue, one eye brown, lip piercing, fair skin, fit body, slim body, small waist, huge breasts, small tattoo on collarbone
+base_negative: fat, small breasts
+
+### Isabella
+description: A powerful and imposing older woman with platinum blonde hair, blue eyes, and a tall, voluptuous figure.
+base_tags: 1girl, solo, platinum blonde hair, blue eyes, mature, fair skin, sharp eyes, hourglass body shape, huge breasts, round breasts, wide hips, thick thighs, small waist, mature face, full thick lips, lip gloss
+base_negative: fat, small breasts"""
             ),
         )
 
@@ -1262,8 +1277,7 @@ def cmd_prepare(args: argparse.Namespace) -> None:
     chapters = parse_master_outline(read_text(master_path))
     if not chapters:
         print(
-            "No chapters found in chapter_outline.md "
-            "(check '# Chapter N' headings).",
+            "No chapters found in chapter_outline.md (check '# Chapter N' headings).",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1310,7 +1324,7 @@ def _generate_chapter_summary(
     # Get previous summary if it exists
     prev_summary = ""
     if ch_num > 1:
-        prev_summary_path = summary_dir / f"ch{ch_num-1:02d}.md"
+        prev_summary_path = summary_dir / f"ch{ch_num - 1:02d}.md"
         if prev_summary_path.exists():
             prev_summary = read_text(prev_summary_path).strip()
 
@@ -1664,7 +1678,9 @@ def cmd_write(args: argparse.Namespace) -> None:
             elif result == "too_small":
                 attempt += 1
                 if attempt <= max_retries:
-                    print(f"Retrying chapter {ch_num} (attempt {attempt}/{max_retries})...")
+                    print(
+                        f"Retrying chapter {ch_num} (attempt {attempt}/{max_retries})..."
+                    )
                 else:
                     print(
                         f"ERROR: Chapter {ch_num} failed after {max_retries} retries. Aborting.",
