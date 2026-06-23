@@ -66,6 +66,8 @@ import unicodedata as ud
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import subprocess
+
 import requests
 
 import validate_chapter as vc
@@ -77,6 +79,9 @@ APP_VERSION = "2.2.0"
 # Minimum character count for a valid chapter output.
 # Outputs smaller than this are assumed to be errors/refusals.
 MIN_CHAPTER_SIZE = 500
+
+# User config directory — templates here override hardcoded defaults.
+CONFIG_DIR = Path.home() / ".config" / "auto_writer"
 
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 USER_PROMPT_FILENAME = "user_prompt.md"
@@ -257,251 +262,81 @@ def chat_completion(
         raise RuntimeError(f"Unexpected API response: {data}")
 
 
-# ============================== Prompts ==============================
+# ============================== Template loading ==============================
 
-SYSTEM_WRITER = """You are a meticulous long-form fiction WRITER.
-Write immersive, coherent chapters that build naturally from prior events.
-Use the provided chapter outline and previous chapters as context.
-Keep voice and tone consistent with the existing story.
-Output pure Markdown prose; do not include OOC notes or explanations.
-"""
-
-SYSTEM_LINE_FIXER = """You are a meticulous copy editor for long-form English fiction.
-You will be given a list of individual lines or multi-line blocks from a story,
-each with a short description of potential validation issues.
-
-Your job:
-- For each item, produce a corrected version.
-- Replace or remove any non-English, corrupted, or obviously wrong characters.
-- Preserve the original meaning, tone, and voice as much as possible.
-- Fix unbalanced quotes and parentheses.
-- Fix repeated words like "the the" when they are clearly mistakes.
-- Remove repeated punctuation like "!!" or ",,".
-- Add missing sentence-ending punctuation where appropriate, but do NOT add
-  punctuation in places where a fragment is clearly intentional (e.g., short
-  interjections, dialogue tags, or stylistic fragments).
-- Remove any Markdown formatting such as:
-  - Bold: **text**
-  - Italic: *text*
-  - Headings: lines starting with one or more '#' characters
-  Convert these to plain prose without Markdown markers.
-
-Handling different types of fixes:
-
-For single-line issues:
-- Output the corrected line.
-
-For multi-line blocks (often improperly formatted text):
-CRITICAL - Understanding proper paragraph structure:
-- A paragraph is a group of related sentences about a single idea/topic.
-- Each paragraph should be written as CONTINUOUS text (no hard line breaks within it).
-- Paragraphs are separated by ONE blank line (not single line breaks).
-- Typical paragraph length: 3-7 sentences, or 100-300 words.
-
-When fixing multi-line blocks:
-1. Analyze the content and identify distinct ideas/topics/beats.
-2. Group related sentences into paragraphs based on content and context.
-3. Write each paragraph as continuous flowing text (all sentences on the same line, no line breaks within the paragraph).
-4. Separate paragraphs with a single blank line.
-5. Do NOT put single line breaks between sentences - that's the error you're fixing!
-6. Do NOT create one giant paragraph from everything - break into logical paragraph units.
-
-Examples of proper paragraph formatting:
-GOOD: Continuous paragraph text.
-
-      New paragraph after blank line.
-
-BAD:  Sentence one.
-      Sentence two.
-      (Single line breaks between sentences = wrong!)
-
-BAD:  Everything in one giant paragraph with no breaks at all for very long text.
-
-Output rules:
-- Return ONLY the corrected text, in the same order as given.
-- When given multiple fixes to make:
-  - Separate each fix with the delimiter: ---FIX---
-  - Do NOT include the delimiter if there's only one fix.
-- Do NOT include any numbering, labels, explanations, or extra text.
-"""
-
-SYSTEM_FIXER = """You are a meticulous copy editor for long-form English fiction.
-You will be given:
-- One chapter of a story, as plain text.
-- A list of validation issues (line numbers and messages), which may include
-  some false positives.
-
-Your job:
-- Fix genuine issues while preserving the original style, tone, voice, and
-  meaning as much as possible.
-- Replace or remove any non-English, corrupted, or obviously wrong characters.
-- Fix unbalanced quotes and parentheses.
-- Fix repeated words like "the the" when they are clearly mistakes.
-- Add missing sentence-ending punctuation where appropriate, but do NOT add
-  punctuation in places where a fragment is clearly intentional (e.g., short
-  interjections, dialogue tags, or stylistic fragments).
-- Remove any Markdown formatting such as:
-  - Bold: **text**
-  - Italic: *text*
-  - Headings: lines starting with one or more '#' characters
-  Convert these to plain prose without Markdown markers.
-- Ensure sensible line breaks:
-  - Do not return the entire chapter as a single very long line.
-  - Use line breaks to keep lines at a reasonable length.
-  - Keep logical paragraph breaks, and insert blank lines between paragraphs
-    where this makes the text more readable.
-  - Do not arbitrarily split a single dialogue line or sentence across
-    multiple lines in the middle of a word or sentence.
-- Chapter structure:
-  - Each chapter should start with a heading like: "Chapter N: Subtitle".
-  - If there is an additional story title heading before that, remove it.
-- Be conservative:
-  - The validation report may contain false positives. Only change something
-    if it is clearly wrong or clearly an improvement in correctness or
-    readability.
-  - Do NOT add new scenes, remove existing scenes, or change plot events.
-
-Output rules:
-- Return ONLY the corrected chapter text, as plain prose.
-- Do NOT include any explanations, comments, or additional metadata.
-"""
+# Bundled templates live in templates/ next to this file.
+# User overrides can be placed in ~/.config/auto_writer/ using the same paths.
+TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
-DEFAULT_USER_WRITE_TEMPLATE = """Write chapter {chapter_count} of the story "{title}".
-Use the provided chapter outline, and keep the new chapter consistent with
-the previous chapter summary and recent context in tone, style, voice, and canon.
+def load_config_template(name: str) -> str:
+    """Return a template by name, preferring user overrides in ~/.config/auto_writer/."""
+    user_path = CONFIG_DIR / name
+    if user_path.exists():
+        content = read_text(user_path).strip()
+        if content:
+            return content
+    bundled_path = TEMPLATES_DIR / name
+    if bundled_path.exists():
+        return read_text(bundled_path).strip()
+    raise FileNotFoundError(
+        f"Template '{name}' not found in {CONFIG_DIR} or {TEMPLATES_DIR}"
+    )
 
-If something in the outline conflicts with what already happened, resolve it
-in a way that feels natural and believable.
 
-# Chapter outline
-{chapter_outline}
-
-# Previous chapter summary
-{previous_summary}
-
-# {context_label}
-{recent_context}
-"""
-
-SUMMARY_SYSTEM_WRITER = """You are a meticulous story summarizer for long-form adult fiction.
-Your task is to create concise, structured summaries that track the story's progress.
-Focus on key developments that affect the plot, character relationships, and story status.
-The goal is that the summary can be used to give context when writing the next story chapter.
-
-"""
-
-DEFAULT_SUMMARY_USER_TEMPLATE = """Create a summary of chapter {chapter_count} of the story "{title}".
-
-Requirements:
-- Current status: What is the main character's current situation?
-- Relationship status: Key relationships and their current state
-- Key plot point reminder: Important events or decisions that affect future chapters
-
-Keep the summary to {max_words} words or less.
-
-# Chapter content
-{chapter_content}
-
-# Previous chapter summary (if any)
-{previous_summary}
-"""
+def _set_default_prompt(project: Path, filename: str, config_key: str) -> None:
+    path = project / ".story" / filename
+    if path.exists():
+        print(f"WARNING: {filename} already exists; not overwriting.")
+        return
+    write_text(path, load_config_template(config_key))
 
 
 def set_default_system_prompt(project: Path) -> None:
-    sp_path = project / ".story" / SYSTEM_PROMPT_FILENAME
-    if sp_path.exists():
-        print("WARNING: System prompt already exists; not overwriting.")
-        return
-    write_text(sp_path, SYSTEM_WRITER)
+    _set_default_prompt(project, SYSTEM_PROMPT_FILENAME, "writer/system.md")
 
 
 def set_default_user_prompt(project: Path) -> None:
-    up_path = project / ".story" / USER_PROMPT_FILENAME
-    if up_path.exists():
-        print("WARNING: User prompt already exists; not overwriting.")
-        return
-    write_text(up_path, DEFAULT_USER_WRITE_TEMPLATE)
+    _set_default_prompt(project, USER_PROMPT_FILENAME, "writer/user.md")
 
 
 def set_default_summary_system_prompt(project: Path) -> None:
-    ssp_path = project / ".story" / SUMMARY_SYSTEM_PROMPT_FILENAME
-    if ssp_path.exists():
-        print("WARNING: Summary system prompt already exists; not overwriting.")
-        return
-    write_text(ssp_path, SUMMARY_SYSTEM_WRITER)
+    _set_default_prompt(project, SUMMARY_SYSTEM_PROMPT_FILENAME, "summary/system.md")
 
 
 def set_default_summary_user_prompt(project: Path) -> None:
-    sup_path = project / ".story" / SUMMARY_USER_PROMPT_FILENAME
-    if sup_path.exists():
-        print("WARNING: Summary user prompt already exists; not overwriting.")
-        return
-    write_text(sup_path, DEFAULT_SUMMARY_USER_TEMPLATE)
+    _set_default_prompt(project, SUMMARY_USER_PROMPT_FILENAME, "summary/user.md")
+
+
+def _load_story_prompt(project: Path, filename: str, cli_flag: str) -> str:
+    content = read_text(project / ".story" / filename).strip()
+    if not content:
+        print(
+            f"ERROR: {filename} is empty.\n"
+            f"Set a new prompt with:\n"
+            f"  auto_writer --{cli_flag}=<path>\n"
+            f"or restore to default with:\n"
+            f"  auto_writer --{cli_flag}=default",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return content
 
 
 def load_system_prompt(project: Path) -> str:
-    sp_path = project / ".story" / SYSTEM_PROMPT_FILENAME
-    system_prompt = read_text(sp_path).strip()
-    if not system_prompt:
-        print(
-            "ERROR: System prompt is empty.\n"
-            "Set a new system prompt with:\n"
-            "  auto_writer --system-prompt=<path>\n"
-            "or restore to default with:\n"
-            "  auto_writer --system-prompt=default",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return system_prompt
+    return _load_story_prompt(project, SYSTEM_PROMPT_FILENAME, "system-prompt")
 
 
 def load_user_prompt(project: Path) -> str:
-    up_path = project / ".story" / USER_PROMPT_FILENAME
-    user_prompt = read_text(up_path).strip()
-    if not user_prompt:
-        print(
-            "ERROR: User prompt is empty.\n"
-            "Set a new user prompt with:\n"
-            "  auto_writer --user-prompt=<path>\n"
-            "or restore to default with:\n"
-            "  auto_writer --user-prompt=default",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return user_prompt
+    return _load_story_prompt(project, USER_PROMPT_FILENAME, "user-prompt")
 
 
 def load_summary_system_prompt(project: Path) -> str:
-    ssp_path = project / ".story" / SUMMARY_SYSTEM_PROMPT_FILENAME
-    summary_system_prompt = read_text(ssp_path).strip()
-    if not summary_system_prompt:
-        print(
-            "ERROR: Summary system prompt is empty.\n"
-            "Set a new summary system prompt with:\n"
-            "  auto_writer --summary-system-prompt=<path>\n"
-            "or restore to default with:\n"
-            "  auto_writer --summary-system-prompt=default",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return summary_system_prompt
+    return _load_story_prompt(project, SUMMARY_SYSTEM_PROMPT_FILENAME, "summary-system-prompt")
 
 
 def load_summary_user_prompt(project: Path) -> str:
-    sup_path = project / ".story" / SUMMARY_USER_PROMPT_FILENAME
-    summary_user_prompt = read_text(sup_path).strip()
-    if not summary_user_prompt:
-        print(
-            "ERROR: Summary user prompt is empty.\n"
-            "Set a new summary user prompt with:\n"
-            "  auto_writer --summary-user-prompt=<path>\n"
-            "or restore to default with:\n"
-            "  auto_writer --summary-user-prompt=default",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return summary_user_prompt
+    return _load_story_prompt(project, SUMMARY_USER_PROMPT_FILENAME, "summary-user-prompt")
 
 
 class _SafeFormatDict(dict):
@@ -572,6 +407,100 @@ def parse_master_outline(master_md: str) -> Dict[int, str]:
             cur_buf.append(ln)
     flush()
     return chapters
+
+
+def generate_story_arc(chapters: Dict[int, str]) -> str:
+    """Generate a condensed one-line-per-chapter arc from parsed chapter data."""
+    lines = []
+    for num in sorted(chapters):
+        content_lines = chapters[num].splitlines()
+        heading = content_lines[0] if content_lines else f"Chapter {num}"
+        first_body = next((l for l in content_lines[1:] if l.strip()), "")
+        lines.append(f"**{heading}** — {first_body}" if first_body else f"**{heading}**")
+    return "\n".join(lines)
+
+
+def load_optional_file(project: Path, filename: str, fallback: str = "") -> str:
+    """Load a file from the project root; return fallback string if missing."""
+    path = project / filename
+    return read_text(path).strip() if path.exists() else fallback
+
+
+def parse_sections_file(content: str) -> Dict[str, str]:
+    """Parse a sectioned markdown file into {normalized_heading: section_content}.
+
+    Sections are delimited by top-level '# Heading' lines. The heading is
+    normalized to a variable name: lowercase with spaces replaced by underscores.
+    Subsection headings ('## ...') are treated as content, not new sections.
+    Lines starting with '// ' are stripped as comments and never appear in values.
+    """
+    result: Dict[str, str] = {}
+    current_key: Optional[str] = None
+    current_buf: List[str] = []
+
+    def flush() -> None:
+        if current_key is not None:
+            result[current_key] = "\n".join(current_buf).strip()
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        # Skip comment lines
+        if stripped.startswith("// "):
+            continue
+        if stripped.startswith("# ") and not stripped.startswith("## "):
+            flush()
+            heading = stripped[2:].strip()
+            current_key = heading.lower().replace(" ", "_")
+            current_buf = []
+        else:
+            current_buf.append(line)
+
+    flush()
+    return result
+
+
+def load_context_data(project: Path) -> Dict[str, str]:
+    """Parse context.md into a dict of template variables."""
+    return parse_sections_file(load_optional_file(project, "context.md", ""))
+
+
+_INSTRUCTIONS_HEADING_RE = re.compile(
+    r"##\s+Chapter[- ]Specific\s+Instructions[^\n]*\n",
+    re.IGNORECASE,
+)
+
+
+def split_outline_instructions(content: str) -> Tuple[str, str]:
+    """Split outline content into (main_outline, chapter_specific_instructions).
+
+    Instructions live in an optional '## Chapter-Specific Instructions' section
+    at the bottom of the outline, delimited by '---' horizontal rules.
+    Returns (outline_without_instructions, instructions_or_empty_string).
+    """
+    m = _INSTRUCTIONS_HEADING_RE.search(content)
+    if not m:
+        return content.rstrip(), ""
+    outline_part = content[: m.start()].rstrip()
+    # Strip trailing --- separator from the outline part
+    outline_part = re.sub(r"\n---+\s*$", "", outline_part).rstrip()
+    instr_part = content[m.end() :].strip()
+    # Strip trailing --- from instructions
+    instr_part = re.sub(r"\n---+\s*$", "", instr_part).strip()
+    return outline_part, instr_part
+
+
+def extract_chapter_title(outline_content: str) -> str:
+    """Extract the subtitle from a chapter outline's first line.
+
+    Expects a first line like 'Chapter N: Title' or 'Chapter N — Title'.
+    Returns the title part, or empty string if absent.
+    """
+    first_line = outline_content.strip().splitlines()[0] if outline_content.strip() else ""
+    # Match "Chapter N: Title" or "Chapter N — Title" (with or without colon/dash)
+    m = re.match(r"(?i)chapter\s+\S+\s*[:\-—]\s*(.*)", first_line)
+    if m:
+        return m.group(1).strip()
+    return ""
 
 
 # ============================== Core helpers ==============================
@@ -652,10 +581,7 @@ def _truncate_to_word_limit_with_sentence_boundary(
         return text
 
     if from_end:
-        # For extracting from the end: split into sentences, then take the last sentences
-        # that fit within max_words
-        import re
-
+        # Split into sentences and take the last ones that fit within max_words.
         sentences = re.split(r"(?<=[.!?…]) +", text.strip())
 
         # Start from the end and accumulate sentences until we hit the word limit
@@ -866,8 +792,8 @@ def run_validation_and_maybe_fix(
     text = read_text(chapter_path)
     lines = text.splitlines(keepends=True)
 
-    # Fil-breda / strukturella fel, t.ex. "Too few lines", har vi ingen
-    # vettig quick-fix för. De hanteras bäst i full-läget.
+    # Structural errors like "Too few lines" have no sensible quick fix;
+    # fall back to full mode for those.
     structural_prefixes = ("Too few lines",)
     has_structural_issues = any(
         any(msg.startswith(pref) for pref in structural_prefixes) for _, msg in errors
@@ -930,8 +856,9 @@ def run_validation_and_maybe_fix(
                 f"{lines_desc}"
             )
 
+        line_fixer_prompt = load_config_template("fixer/line.md")
         fix_messages = [
-            {"role": "system", "content": SYSTEM_LINE_FIXER},
+            {"role": "system", "content": line_fixer_prompt},
             {"role": "user", "content": user_content},
         ]
 
@@ -940,7 +867,7 @@ def run_validation_and_maybe_fix(
         write_text(
             prompt_path,
             "System Prompt (quick fixer):\n"
-            + SYSTEM_LINE_FIXER
+            + line_fixer_prompt
             + "\n\nUser Message:\n"
             + user_content
             + "\n",
@@ -1019,13 +946,14 @@ def run_validation_and_maybe_fix(
         save_json(logs_dir / f"ch{ch_num:02d}.qfix.request.json", fixlog)
         return
 
-    # ----- full-läge: nuvarande beteende -----
+    # Full mode: send the entire chapter for rewriting.
 
     validation_summary = build_validation_summary(errors)
     original_text = text
 
+    full_fixer_prompt = load_config_template("fixer/full.md")
     fix_messages = [
-        {"role": "system", "content": SYSTEM_FIXER},
+        {"role": "system", "content": full_fixer_prompt},
         {
             "role": "user",
             "content": (
@@ -1043,7 +971,7 @@ def run_validation_and_maybe_fix(
     write_text(
         fix_prompt_path,
         "System Prompt (fixer):\n"
-        + SYSTEM_FIXER
+        + full_fixer_prompt
         + "\n\nUser Message:\n"
         + fix_messages[1]["content"]
         + "\n",
@@ -1119,61 +1047,11 @@ def cmd_init(args: argparse.Namespace, project: Path) -> None:
     # create skeleton files if missing
     master = project / "chapter_outline.md"
     if not master.exists():
-        write_text(
-            master,
-            "# Chapter 1 - Opening\n"
-            "* Inciting incident\n"
-            "* First turn\n\n"
-            "# Chapter 2 - Complication\n"
-            "* Complication\n"
-            "* Reaction\n",
-        )
+        write_text(master, load_config_template("outline_template.md"))
 
-    characters = project / "characters.md"
-    if not characters.exists():
-        write_text(
-            characters,
-            (
-                """
-Finally, please create SDXL tags for the characters, matching their character profiles, for consistent image generation. Use danbooru-style tags that SDXL understands rather than natural language sentences. Use base physical descriptions only that capture the character's physical body. Do not include traits that change between scenes; Do not include e.g. mood, expression, clothes, location.
-Follow the exact format as in the examples below:
-
-### Callahan
-description: A shy but fit young man with an average build and "boy next door" charm.
-base_tags: 1boy, solo, short dark brown hair, brown eyes, average height, fit body, clean shaven, detailed face, handsome, handsome face, detailed eyes
-base_negative: female, 1girl
-
-### Elara
-description: A petite and shy woman with a "baby face," blonde hair, blue eyes, and large soft breasts.
-base_tags: 1girl, solo, blonde hair, blue eyes, fair skin, cute face, baby face, full lips, slim body, petite body, small stature, huge breasts, soft natural breasts, massive breasts, small waist, wide hips, shy
-base_negative: fat, small breasts
-
-### Chloe
-description: An athletic brunette with a high ponytail, hazel eyes, and a toned body with thick muscular thighs.
-base_tags: 1girl, solo, brunette hair, high ponytail, hazel eyes, full lips, tan skin, athletic body, toned muscles, six pack abs, large breasts, E-cup, firm breasts, round breasts, small waist, thick thighs, tall girl, detailed eyes
-base_negative: fat, small breasts
-
-### Victoria
-description: A statuesque mature woman with red hair, blue eyes, and a massive chest.
-base_tags: 1girl, solo, red hair, blue eyes, fair skin, mature face, sharp eyes, thick lips, hourglass body shape, huge breasts, FF-cup, massive breasts, wide hips, thick thighs, small waist
-base_negative: fat, small breasts
-
-### Jasmine
-description: An exotic woman with black hair, dark green eyes, and massive natural breasts with large nipples.
-base_tags: 1girl, solo, black hair, dark green eyes, exotic beauty, thick pouty lips, fair skin, huge breasts, G-cup, massive natural breasts, large areolae, large nipples, small waist, wide hips, thick thighs
-base_negative: fat, small breasts
-
-### Raven
-description: An edgy rebel with dark hair with pink streaks shaved on the sides, heterochromia, and a lip piercing.
-base_tags: 1girl, solo, black and pink hair, goth look, undercut, full lips, dark purple lip gloss, heterochromia, one eye blue, one eye brown, lip piercing, fair skin, fit body, slim body, small waist, huge breasts, small tattoo on collarbone
-base_negative: fat, small breasts
-
-### Isabella
-description: A powerful and imposing older woman with platinum blonde hair, blue eyes, and a tall, voluptuous figure.
-base_tags: 1girl, solo, platinum blonde hair, blue eyes, mature, fair skin, sharp eyes, hourglass body shape, huge breasts, round breasts, wide hips, thick thighs, small waist, mature face, full thick lips, lip gloss
-base_negative: fat, small breasts"""
-            ),
-        )
+    context_file = project / "context.md"
+    if not context_file.exists():
+        write_text(context_file, load_config_template("context_template.md"))
 
     print(f"Initialized story repo at: {project}")
 
@@ -1217,23 +1095,33 @@ def cmd_reset(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     story_dir = project / cfg["paths"]["story_dir"]
+    summary_dir = project / cfg["paths"].get("summary_dir", "summary")
     logs_dir = project / cfg["paths"]["logs_dir"]
 
     target = (args.reset or "").strip().lower()
 
+    _log_globs = (
+        "ch*.prompt.md",
+        "ch*.request.json",
+        "ch*.fix.prompt.md",
+        "ch*.fix.request.json",
+        "ch*.qfix.prompt.md",
+        "ch*.qfix.request.json",
+        "ch*.summary.prompt.md",
+        "ch*.summary.request.json",
+        "ch*.failed_output.md",
+        "ch*.api_error.md",
+    )
+
     if target == "all":
-        # Remove all chapters & logs
         for p in list_chapter_files(story_dir):
             p.unlink()
-        for p in logs_dir.glob("ch*.prompt.md"):
+        for p in list_chapter_files(summary_dir):
             p.unlink()
-        for p in logs_dir.glob("ch*.request.json"):
-            p.unlink()
-        for p in logs_dir.glob("ch*.fix.prompt.md"):
-            p.unlink()
-        for p in logs_dir.glob("ch*.fix.request.json"):
-            p.unlink()
-        print("Reset all chapters and logs.")
+        for pattern in _log_globs:
+            for p in logs_dir.glob(pattern):
+                p.unlink()
+        print("Reset all chapters, summaries, and logs.")
         return
 
     try:
@@ -1242,14 +1130,23 @@ def cmd_reset(args: argparse.Namespace) -> None:
         print(f"ERROR: Invalid chapter number: {args.reset!r}", file=sys.stderr)
         sys.exit(1)
 
-    story_path = story_dir / f"ch{ch_num:02d}.md"
-    prompt_log = logs_dir / f"ch{ch_num:02d}.prompt.md"
-    req_log = logs_dir / f"ch{ch_num:02d}.request.json"
-    fix_prompt_log = logs_dir / f"ch{ch_num:02d}.fix.prompt.md"
-    fix_req_log = logs_dir / f"ch{ch_num:02d}.fix.request.json"
+    candidates = [
+        story_dir / f"ch{ch_num:02d}.md",
+        summary_dir / f"ch{ch_num:02d}.md",
+        logs_dir / f"ch{ch_num:02d}.prompt.md",
+        logs_dir / f"ch{ch_num:02d}.request.json",
+        logs_dir / f"ch{ch_num:02d}.fix.prompt.md",
+        logs_dir / f"ch{ch_num:02d}.fix.request.json",
+        logs_dir / f"ch{ch_num:02d}.qfix.prompt.md",
+        logs_dir / f"ch{ch_num:02d}.qfix.request.json",
+        logs_dir / f"ch{ch_num:02d}.summary.prompt.md",
+        logs_dir / f"ch{ch_num:02d}.summary.request.json",
+        logs_dir / f"ch{ch_num:02d}.failed_output.md",
+        logs_dir / f"ch{ch_num:02d}.api_error.md",
+    ]
 
     removed_any = False
-    for p in (story_path, prompt_log, req_log, fix_prompt_log, fix_req_log):
+    for p in candidates:
         if p.exists():
             p.unlink()
             removed_any = True
@@ -1285,6 +1182,12 @@ def cmd_prepare(args: argparse.Namespace) -> None:
     # write outline/chNN.md
     for num, brief in sorted(chapters.items(), key=lambda kv: kv[0]):
         write_text(outline_dir / f"ch{num:02d}.md", brief)
+
+    # generate condensed story_arc.md (one line per chapter)
+    arc_path = project / "story_arc.md"
+    arc_content = generate_story_arc(chapters)
+    write_text(arc_path, arc_content + "\n")
+    print(f"Generated story arc at: {arc_path}")
 
     # persist index for quick reference
     index = [{"chapter": n, "file": f"ch{n:02d}.md"} for n in sorted(chapters)]
@@ -1336,9 +1239,18 @@ def _generate_chapter_summary(
     max_words = cfg.get("summary", {}).get("max_words", 300)
 
     title = cfg.get("title", "Untitled Story")
+
+    # Load outline to extract chapter title
+    outline_dir = project / cfg.get("paths", {}).get("outline_dir", "outline")
+    outline_content = read_text(outline_dir / f"ch{ch_num:02d}.md").strip()
+    chapter_title = extract_chapter_title(outline_content)
+
     context = {
         "title": title,
+        "story_title": title,
         "chapter_count": ch_num,
+        "chapter_number": ch_num,
+        "chapter_title": chapter_title,
         "chapter_content": chapter_content,
         "previous_summary": prev_summary,
         "max_words": max_words,
@@ -1424,7 +1336,8 @@ def _write_single_chapter(
         print(f"ERROR: Outline not found: {outline_path}", file=sys.stderr)
         return "error"
 
-    chapter_outline = read_text(outline_path).strip()
+    outline_raw = read_text(outline_path).strip()
+    chapter_outline, chapter_specific_instructions = split_outline_instructions(outline_raw)
     story_path = story_dir / outline_path.name
 
     print(f"Writing chapter {ch_num}")
@@ -1483,13 +1396,40 @@ def _write_single_chapter(
         user_template = load_user_prompt(project)
 
         title = cfg.get("title", "Untitled Story")
+
+        # Load all context variables from context.md
+        ctx = load_context_data(project)
+
+        # chapter_outline and chapter_specific_instructions already extracted above
+        chapter_title = extract_chapter_title(chapter_outline)
+
         context = {
+            # Backward-compat originals
             "title": title,
             "chapter_count": ch_num,
+            # New aliases
+            "story_title": title,
+            "chapter_number": ch_num,
+            "chapter_title": chapter_title,
+            # Style variables (from context.md)
+            "genre": ctx.get("genre", ""),
+            "tone": ctx.get("tone", ""),
+            "writing_style": ctx.get("writing_style", ""),
+            "pov_approach": ctx.get("pov_approach", ""),
+            "target_word_count": ctx.get("target_word_count", ""),
+            # Chapter content
             "chapter_outline": chapter_outline or "(empty)",
             "previous_summary": previous_summary or "(No previous chapter)",
             "recent_context": recent_context,
             "context_label": context_label,
+            "chapter_specific_instructions": chapter_specific_instructions,
+            # Story-level content (from context.md)
+            "synopsis": ctx.get("synopsis", "(No synopsis provided)"),
+            "themes": ctx.get("themes", ""),
+            "kinks": ctx.get("kinks", ""),
+            "character_profiles": ctx.get("character_profiles", "(No character profiles provided)"),
+            "story_arc": load_optional_file(project, "story_arc.md", "(No story arc provided)"),
+            "continuity_notes": ctx.get("continuity_notes", ""),
         }
 
         system_prompt = format_template(system_template, **context)
@@ -1562,8 +1502,6 @@ def _write_single_chapter(
 
     # call the wc command if available and print lines, words and characters
     try:
-        import subprocess
-
         wc_out = subprocess.check_output(["wc", story_path]).decode().strip()
         parts = wc_out.split()
         if len(parts) >= 4:
@@ -1617,16 +1555,13 @@ def cmd_write(args: argparse.Namespace) -> None:
 
     profile = load_profile(project)
 
-    # Hämta alla kapitel som finns i outline/
     outline_files = list_chapter_files(outline_dir)
     if not outline_files:
         print("No outline chapters found in", outline_dir, file=sys.stderr)
         return
 
-    # Sortera kapitelnummer från outlines
     outline_nums = sorted(chapter_num_from_name(p.name) for p in outline_files)
 
-    # Bestäm startkapitel:
     if args.chapter is not None:
         start_ch = int(args.chapter)
         if start_ch not in outline_nums:
@@ -1636,7 +1571,7 @@ def cmd_write(args: argparse.Namespace) -> None:
             )
             return
     else:
-        # Hitta första outline där story saknas
+        # Find the first outline that has no corresponding story file.
         start_ch = None
         for p in outline_files:
             if not (story_dir / p.name).exists():
@@ -1646,12 +1581,9 @@ def cmd_write(args: argparse.Namespace) -> None:
             print("All chapters already written. Nothing to do.")
             return
 
-    # Vilka kapitel ska vi processa?
     if args.loop:
-        # Alla kapitel från start_ch och uppåt (enligt outlines)
         chapters_to_process = [n for n in outline_nums if n >= start_ch]
     else:
-        # Bara startkapitlet
         chapters_to_process = [start_ch]
 
     writes_done = 0
@@ -1719,96 +1651,35 @@ def cmd_profile(project: Path, provided_path: str) -> None:
         print("Created new profile.")
 
 
-def cmd_system_prompt(project: Path, provided_path: str) -> None:
-    sp_path = project / ".story" / SYSTEM_PROMPT_FILENAME
-    already_exists = sp_path.exists()
-
+def _cmd_set_prompt(project: Path, filename: str, config_key: str, provided_path: str) -> None:
+    path = project / ".story" / filename
+    already_exists = path.exists()
     if provided_path == "default":
-        set_default_system_prompt(project)
+        _set_default_prompt(project, filename, config_key)
     else:
-        source_sp_path = Path(provided_path)
-        if source_sp_path.exists():
-            write_text(sp_path, read_text(source_sp_path))
-        else:
-            print(
-                f"ERROR: Provided system prompt path not found:\n  {source_sp_path}",
-                file=sys.stderr,
-            )
+        source = Path(provided_path)
+        if not source.exists():
+            print(f"ERROR: Provided path not found:\n  {source}", file=sys.stderr)
             sys.exit(1)
+        write_text(path, read_text(source))
+    action = "Replaced existing" if already_exists else "Created new"
+    print(f"{action} {filename}.")
 
-    if already_exists:
-        print("Replaced existing system prompt.")
-    else:
-        print("Created new system prompt.")
+
+def cmd_system_prompt(project: Path, provided_path: str) -> None:
+    _cmd_set_prompt(project, SYSTEM_PROMPT_FILENAME, "writer/system.md", provided_path)
 
 
 def cmd_user_prompt(project: Path, provided_path: str) -> None:
-    up_path = project / ".story" / USER_PROMPT_FILENAME
-    already_exists = up_path.exists()
-
-    if provided_path == "default":
-        set_default_user_prompt(project)
-    else:
-        source_up_path = Path(provided_path)
-        if source_up_path.exists():
-            write_text(up_path, read_text(source_up_path))
-        else:
-            print(
-                f"ERROR: Provided user prompt path not found:\n  {source_up_path}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    if already_exists:
-        print("Replaced existing user prompt.")
-    else:
-        print("Created new user prompt.")
+    _cmd_set_prompt(project, USER_PROMPT_FILENAME, "writer/user.md", provided_path)
 
 
 def cmd_summary_system_prompt(project: Path, provided_path: str) -> None:
-    ssp_path = project / ".story" / SUMMARY_SYSTEM_PROMPT_FILENAME
-    already_exists = ssp_path.exists()
-
-    if provided_path == "default":
-        set_default_summary_system_prompt(project)
-    else:
-        source_ssp_path = Path(provided_path)
-        if source_ssp_path.exists():
-            write_text(ssp_path, read_text(source_ssp_path))
-        else:
-            print(
-                f"ERROR: Provided summary system prompt path not found:\n  {source_ssp_path}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    if already_exists:
-        print("Replaced existing summary system prompt.")
-    else:
-        print("Created new summary system prompt.")
+    _cmd_set_prompt(project, SUMMARY_SYSTEM_PROMPT_FILENAME, "summary/system.md", provided_path)
 
 
 def cmd_summary_user_prompt(project: Path, provided_path: str) -> None:
-    sup_path = project / ".story" / SUMMARY_USER_PROMPT_FILENAME
-    already_exists = sup_path.exists()
-
-    if provided_path == "default":
-        set_default_summary_user_prompt(project)
-    else:
-        source_sup_path = Path(provided_path)
-        if source_sup_path.exists():
-            write_text(sup_path, read_text(source_sup_path))
-        else:
-            print(
-                f"ERROR: Provided summary user prompt path not found:\n  {source_sup_path}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    if already_exists:
-        print("Replaced existing summary user prompt.")
-    else:
-        print("Created new summary user prompt.")
+    _cmd_set_prompt(project, SUMMARY_USER_PROMPT_FILENAME, "summary/user.md", provided_path)
 
 
 def cmd_summary_max_words(project: Path, cfg: Dict[str, Any], max_words: int) -> None:
