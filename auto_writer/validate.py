@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """
-validate_chapter.py
+Chapter validation (installed as `validate_chapter` / `vc`).
 
 Usage:
-    ./validate_chapter.py path/to/story/ch*.md
-    ./validate_chapter.py --strip-asterisks path/to/story/ch*.md
+    validate_chapter path/to/story/ch*.md
+    validate_chapter --strip-asterisks path/to/story/ch*.md
 """
 
 import argparse
@@ -15,10 +15,15 @@ import unicodedata as ud
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from .text import ending_looks_truncated
+
 TITLE_RE = re.compile(r"^Chapter\s+(\d+):\s+(.+)$")
 REPEATED_WORD_RE = re.compile(r"\b(\w+)\s+\1\b", re.IGNORECASE)
 MIN_EXPECTED_LINES = 20  # configurable threshold
 MAX_LINE_LENGTH = 1000  # configurable threshold
+
+# Messages for issues that the line fixer must not "repair" by adding punctuation.
+TRUNCATED_ENDING = "Possible truncated ending (last line looks cut off mid-sentence)"
 
 
 # --- Signature / sentence-tail heuristics ------------------------------------
@@ -86,9 +91,8 @@ def is_suspicious_char(ch: str) -> bool:
     if code < 32 or code == 127:
         return True
 
-    # Letters outside A-Z/a-z are considered suspicious (non-English letters)
-    cat = ud.category(ch)
-    if cat.startswith("L") and ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ":
+    # Letters from non-Latin scripts are suspicious; accented Latin (café, naïve) is fine
+    if ud.category(ch).startswith("L") and "LATIN" not in ud.name(ch, ""):
         return True
 
     # Everything else (punctuation, digits, etc.) is fine
@@ -156,26 +160,19 @@ def check_title_lines(path: Path, lines: List[str]) -> List[Tuple[int, str]]:
 def strip_markdown_asterisks(text: str) -> tuple[str, bool]:
     """
     Remove Markdown emphasis markers *like this* and **like this**.
+    Lines consisting only of asterisks (*** scene breaks) are kept.
     Returns (new_text, changed_flag).
     """
-    changed = False
-    new_text = text
-
-    def repl_bold(match: re.Match) -> str:
-        nonlocal changed
-        changed = True
-        return match.group(1)
-
-    new_text = re.sub(r"\*\*(.+?)\*\*", repl_bold, new_text)
-
-    def repl_italic(match: re.Match) -> str:
-        nonlocal changed
-        changed = True
-        return match.group(1)
-
-    new_text = re.sub(r"\*(.+?)\*", repl_italic, new_text)
-
-    return new_text, changed
+    out_lines = []
+    for line in text.splitlines(keepends=True):
+        if re.fullmatch(r"\s*\*{3,}\s*", line):
+            out_lines.append(line)
+            continue
+        line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+        line = re.sub(r"\*(.+?)\*", r"\1", line)
+        out_lines.append(line)
+    new_text = "".join(out_lines)
+    return new_text, new_text != text
 
 
 SENTENCE_ENDERS = (".", "?", "!", "…", "—")
@@ -393,6 +390,10 @@ def validate_file(path: Path, strip_asterisks: bool) -> list[tuple[int, str]]:
 
     # Check for auto-wrapped text blocks
     errors.extend(check_auto_wrapped_blocks(lines))
+
+    if lines and ending_looks_truncated(text):
+        last = max(i for i, ln in enumerate(lines, start=1) if ln.strip())
+        errors.append((last, TRUNCATED_ENDING))
 
     total_lines = len(lines)
     if total_lines < MIN_EXPECTED_LINES:

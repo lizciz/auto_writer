@@ -4,259 +4,87 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-`auto_writer` is a semi-automatic long-form story writing tool that uses OpenAI-compatible APIs to generate fiction chapters. It follows a git-like command interface and maintains story state in a `.story/` directory within each project.
+`auto_writer` is a semi-automatic long-form story writer for OpenAI-compatible APIs. The user writes a rough idea; the tool develops it into a plan and chapter outline (with the user reviewing each step), then writes chapters one at a time while maintaining a per-chapter story bible for continuity.
 
-The codebase consists of two main modules:
-- `auto_writer.py`: Core story generation and management
-- `validate_chapter.py`: Chapter validation and quality checking
+It depends on the sibling package `storykit` (`~/git/personal-repos/storykit`, not on PyPI) for the streaming LLM client (`storykit.llm.OpenAICompatClient`) and the prompt library (`storykit.prompts`).
 
 ## Commands
 
-### Installation
+```bash
+# Dev install (storykit must be installed from the local checkout)
+pip install -e ../storykit -e ".[dev]"
+pytest
+ruff check .
+
+# The user's `aw` is a pipx editable install:
+pipx install --force --editable . --pip-args="--no-deps"
+pipx inject auto-writer --editable ../storykit
+```
+
+User workflow (each step writes a file the user may edit before the next):
 
 ```bash
-# Install the package (makes aw/auto_writer and vc/validate_chapter available)
-pip install -e .
+aw init "Title" [--profile NAME]     # creates idea.md
+aw profile [NAME|PATH]   # no arg: list shared ~/.config/llm-profiles/*.json (storykit.profiles) + current; else copy into .story/profile.json
+aw plan                  # 1st run: questions.md; after answering: plan.md
+aw plan --no-questions   # skip the question round; model decides, lists # Assumptions
+aw outline               # chapter_outline.md from plan.md
+aw review-outline [--apply]          # outline_review.md; --apply revises the outline
+aw prepare               # outline/chNN.md + story_arc.md
+aw write [N] [--loop] [--max-writes N] [--fix-mode quick|full|none] [--force] [--retry N]
+aw bible [N]             # regenerate stale/missing bibles (or bible N)
+aw reset N|all
+aw status
+aw prompts [list | show TASK | use TASK VARIANT | fork TASK]
+aw migrate               # convert legacy .story/system_prompt.md + user_prompt.md
+vc story/ch*.md          # standalone validator (validate_chapter)
 ```
 
-### Story Management
+All commands find the project by walking up from CWD (or `-C PATH`).
 
-```bash
-# Initialize a new story project
-auto_writer --init --title "Story Title" [--dir dirname] [--path /path/to/parent]
+## Architecture (`auto_writer/`)
 
-# Set API profile (required before writing)
-auto_writer --profile /path/to/profile.json
+- `cli.py` — argparse subcommands; thin wrappers around the modules below.
+- `project.py` — `Project`: config (merged with `DEFAULT_CONFIG`), paths, and generated-file bookkeeping in `.story/state.json` (`record()` stores input/output hashes; `changed_inputs()` drives staleness warnings; `backup()` copies to `.story/backup/` before overwriting).
+- `llm.py` — `Generator.run(task, variables, log_name, ...)`: resolves the task prompt, renders it, calls the API, logs `logs/<name>.<task>.{prompt.md,request.json,thinking.md}`. Continues responses that stop early (`finish_reason == "length"`, or a truncated-looking ending when the provider reports no reason), retries API errors and too-small outputs (refusals) with backoff.
+- `planning.py` — `plan` (questions round by default), `outline`, `review_outline`, `prepare`.
+- `writing.py` — `write_chapter`: ensures earlier bibles are current, builds variables (`chapter_variables`), generates, validates/fixes, updates the chapter's bible. The full-mode fixer's output is rejected if it is <80% of the original length. Truncated-ending issues are never sent to the fixer (adding a full stop would hide the truncation).
+- `bible.py` — `bible/chNN.md` is the story state *after* chapter NN, generated from the previous bible + chapter text, so rewriting chapter 4 never sees facts from chapter 7. Staleness propagates down the chain (`stale_bibles`).
+- `text.py` — pure helpers: outline parsing (`# Chapter N: Title`, digits or number words; preamble such as an overview table is ignored), `parse_sections` for `# Section` files, `ending_looks_truncated`, word ranges.
+- `validate.py` — regex validator (title format, quotes, foreign-script characters, punctuation, auto-wrapped blocks, truncated ending, ...).
 
-# Parse chapter_outline.md into individual chapter outlines
-auto_writer --prepare
+## Prompts
 
-# Write next unwritten chapter
-auto_writer --write [--fix-mode quick|full] [--retry N]
-
-# Write specific chapter
-auto_writer --write --chapter N
-
-# Write all remaining chapters (batch mode)
-auto_writer --write --loop [--max-writes N]
-
-# Remove generated chapter(s)
-auto_writer --reset N        # Remove chapter N
-auto_writer --reset all      # Remove all chapters
-
-# Update story metadata
-auto_writer --title "New Title"
-auto_writer --system-prompt /path/to/prompt.md    # or "default" to restore
-auto_writer --user-prompt /path/to/prompt.md
-auto_writer --summary-system-prompt /path/to/prompt.md
-auto_writer --summary-user-prompt /path/to/prompt.md
-auto_writer --summary-max-words N
-```
-
-### Validation
-
-```bash
-# Validate chapter files
-validate_chapter story/ch*.md
-
-# Validate and strip Markdown formatting
-validate_chapter --strip-asterisks story/ch*.md
-```
-
-## Architecture
-
-### Project Structure
-
-Each story project follows this layout:
+One file per task with both messages (see `storykit/prompts.py` for the format):
 
 ```
-project/
-├── .story/
-│   ├── config.json                 # Story metadata, paths, context settings
-│   ├── profile.json                # API config (api_base, model, api_key_env, parameters)
-│   ├── system_prompt.md            # System prompt template for writer
-│   ├── user_prompt.md              # User prompt template for writer
-│   ├── summary_system_prompt.md    # System prompt template for summarizer
-│   └── summary_user_prompt.md      # User prompt template for summarizer
-├── chapter_outline.md        # Master outline (edit this)
-├── context.md                # All story context: synopsis, style, themes, kinks, characters, continuity notes (edit this; created by --init)
-├── story_arc.md              # Condensed one-line-per-chapter arc (generated by --prepare)
-├── outline/
-│   └── ch01.md, ch02.md...   # Per-chapter outlines (generated by --prepare)
-├── story/
-│   └── ch01.md, ch02.md...   # Generated chapters
-├── summary/
-│   └── ch01.md, ch02.md...   # Generated chapter summaries
-└── logs/
-    ├── chNN.prompt.md            # Full prompts sent to API
-    ├── chNN.request.json         # Request metadata
-    ├── chNN.qfix.prompt.md       # Quick-fixer prompts
-    ├── chNN.qfix.request.json    # Quick-fixer metadata
-    ├── chNN.fix.prompt.md        # Full-fixer prompts
-    ├── chNN.fix.request.json     # Full-fixer metadata
-    ├── chNN.summary.prompt.md    # Summary prompts
-    └── chNN.summary.request.json # Summary metadata
+---
+description: ...
+variables: [plan, bible]
+---
+=== system ===
+...
+=== user ===
+...
 ```
 
-### Core Workflow
+Tasks: `plan_questions`, `plan`, `outline`, `outline_review`, `outline_revise`, `writer`, `bible`, `fixer_line`, `fixer_full`.
 
-1. **Initialization**: `--init` creates `.story/` directory with config, default prompts, and `context.md` skeleton. `chapter_outline.md` is seeded from `~/.config/auto_writer/outline_template.md`.
-2. **Outline Preparation**: `--prepare` parses `chapter_outline.md` using `parse_master_outline()` which recognizes headings in format `# Chapter N` (supports digits and English number words); splits content into `outline/chNN.md` files; also generates `story_arc.md` (condensed one-line-per-chapter overview) via `generate_story_arc()`.
-3. **Chapter Writing**: `--write` uses `_write_single_chapter()` which:
-   - If the previous chapter has no summary, generates it first via `_generate_chapter_summary()`
-   - Loads chapter outline from `outline/chNN.md`; extracts the optional `## Chapter-Specific Instructions` section via `split_outline_instructions()`
-   - Builds context from previous chapters (controlled by `context.mode` in config)
-   - Loads the previous chapter's summary from `summary/chNN.md` as `{previous_summary}`
-   - Formats system/user prompts using template substitution
-   - Calls `chat_completion()` to generate chapter
-   - Outputs smaller than `MIN_CHAPTER_SIZE` (500 chars) are treated as errors/refusals
-   - Automatically runs validation via `vc.validate_file()`
-   - Applies fixes in either "quick" or "full" mode
-   - After a successful write, generates a summary of the new chapter
+Lookup: `.story/prompts/<task>.md` (project fork) → `~/.config/auto_writer/prompts/<task>/<variant>.md` → bundled `auto_writer/prompts/<task>/<variant>.md`. The variant comes from `config.json` `"prompts": {task: variant}` (default `default`). `.story/prompts/<task>.append.md` is appended to whichever prompt is used. Bundled prompts are generic across stories but tuned for long-form explicit erotic fiction (character defaults, per-scene prose styles, a sexual arc that escalates across chapters, consent as the single hard boundary, adults only); story specifics come from `plan.md` via `{plan}`. The bible's `# Sexual History` table is what lets later chapters escalate instead of repeating. Every logged request records the resolved prompt path and hash.
 
-### API Integration
+Writer variables: `{plan}` (whole plan), each plan section by normalized name (`{synopsis}`, `{character_profiles}`, `{fixed_facts}`, ...), `{story_arc}`, `{bible}`, `{recent_context}`, `{context_label}`, `{chapter_outline}`, `{chapter_specific_instructions}`, `{chapter_number}`, `{chapter_title}`, `{story_title}`, `{target_word_count}`, `{length_instruction}`; legacy aliases `{title}`, `{chapter_count}`, `{previous_summary}` (= bible), `{kinks}`.
 
-The `chat_completion()` function is a thin wrapper over OpenAI-compatible `/chat/completions` endpoints. The profile JSON should contain:
+Keep stable content (plan, arc) in the system message and previous chapters first in the user message so provider prefix caching works across chapters.
 
-```json
-{
-  "api_base": "https://api.example.com/v1",
-  "api_key_env": "API_KEY",
-  "model": "model-name",
-  "temperature": 0.7,
-  "max_tokens": 4000
-}
+## Project layout
+
+```
+.story/config.json, profile.json, state.json, prompts/, backup/
+idea.md → questions.md → plan.md → chapter_outline.md (+ outline_review.md)
+outline/chNN.md, story_arc.md      # from `aw prepare`
+story/chNN.md, bible/chNN.md, logs/
 ```
 
-API key is read from the environment variable specified in `api_key_env`. Fallbacks: `API_BASE` and `MODEL` env vars, and `API_KEY` env var.
+Legacy projects: `context.md` is used as the plan if `plan.md` is missing; old `summary/` files are ignored (bibles are generated on the next write).
 
-### Summary System
-
-After each chapter write, `_generate_chapter_summary()` generates a short structured summary saved to `summary/chNN.md`. Summaries track:
-- Current character situation
-- Relationship status
-- Key plot points for future chapters
-
-The summary of the previous chapter is injected as `{previous_summary}` into the writer prompt. Summary word limit is configurable via `config.json` (`summary.max_words`, default 300).
-
-When writing chapter N, if chapter N-1 exists but has no summary, the summary is automatically generated before the write begins.
-
-### Context Management
-
-Context mode is set in `config.json` under `context.mode`:
-
-- **`last_n_chapters`** (default): Includes the last `last_n_chapters` full chapters (default: 3) in the writer prompt as `{recent_context}`. No word limit applied.
-- **`last_n_words`**: Takes the last `last_n_words` words from the most recent chapter, sentence-boundary-aware, extracted from the end.
-
-The `{context_label}` template variable is set automatically to describe which mode is active.
-
-### Validation and Auto-Fix System
-
-After each chapter write, validation runs automatically. The system has two fix modes:
-
-- **Quick mode** (default): Groups consecutive problematic lines into blocks and sends them to the API with `SYSTEM_LINE_FIXER`. Consecutive lines with compatible issues (e.g., "line too long", "auto-wrapped") are grouped together. Responses are split by the `---FIX---` delimiter and applied in-place. Falls back to full mode if structural issues (e.g., "Too few lines") are detected.
-- **Full mode**: Sends entire chapter with the validation report using `SYSTEM_FIXER`, replaces whole file.
-
-Validation checks (in `validate_chapter.py`):
-- Chapter title format: `Chapter N: Subtitle`
-- Unbalanced quotes/parentheses
-- Suspicious/non-English characters
-- Missing sentence-ending punctuation (with signature-tail detection)
-- Repeated words ("the the")
-- AI placeholders (TODO, INSERT SCENE, Lorem ipsum)
-- Line length violations (>1000 chars indicates missing line breaks)
-- Auto-wrapped text blocks: 3+ consecutive prose lines without blank separators
-- Minimum line count (structural check, threshold: 20 lines)
-
-### Prompt Template System
-
-Prompts support variable substitution via `format_template()` which uses `_SafeFormatDict` to preserve unknown placeholders. Available variables:
-
-**Writer prompts** (`system_prompt.md`, `user_prompt.md`):
-
-Story identity:
-- `{title}` / `{story_title}` — story title (aliases of each other)
-- `{chapter_count}` / `{chapter_number}` — current chapter number (aliases)
-- `{chapter_title}` — subtitle extracted from the chapter outline heading (e.g. "The Meeting")
-
-Style (parsed from `style.md` `# Heading` sections):
-- `{genre}`, `{tone}`, `{writing_style}`, `{pov_approach}`, `{target_word_count}`
-
-Story context (from `context.md` sections; all optional):
-- `{synopsis}` — `# Synopsis` section
-- `{themes}` — `# Themes` section
-- `{kinks}` — `# Kinks` section
-- `{character_profiles}` — `# Character Profiles` section
-- `{continuity_notes}` — `# Continuity Notes` section
-- `{genre}`, `{tone}`, `{writing_style}`, `{pov_approach}`, `{target_word_count}` — style sections
-- `{story_arc}` — condensed full-story arc (from `story_arc.md`, generated by `--prepare`)
-
-Per-chapter:
-- `{chapter_outline}` — current chapter outline (from `outline/chNN.md`, with `## Chapter-Specific Instructions` section stripped)
-- `{chapter_specific_instructions}` — extracted from the optional `## Chapter-Specific Instructions` section at the bottom of `outline/chNN.md`
-- `{previous_summary}` — summary of the previous chapter
-- `{recent_context}` — recent context block (full chapters or word-limited snippet)
-- `{context_label}` — human-readable label describing the context mode
-
-All sections are optional — missing sections fall back to empty or a note, and the write proceeds normally.
-
-**`context.md` format**: Top-level `# Section Name` headings define variable names (normalized: lowercase, spaces → underscores). `## Subheadings` are treated as content within the enclosing section. Lines starting with `// ` are stripped as comments and never appear in variable values. Example:
-```
-# Synopsis
-
-// Brief description of the story premise.
-
-Once upon a time...
-
-# Genre
-
-Dark romance, contemporary fiction
-
-# Character Profiles
-
-## Alex
-Role: Protagonist
-Description: ...
-
-# Continuity Notes
-
-- Alex's apartment is on the 4th floor, building has no elevator
-- The coffee shop is called "Grounds for Discussion"
-```
-
-**Summary prompts** (`summary_system_prompt.md`, `summary_user_prompt.md`):
-- `{title}` / `{story_title}`, `{chapter_count}` / `{chapter_number}`, `{chapter_title}`
-- `{chapter_content}`, `{previous_summary}`, `{max_words}`
-
-## Development Notes
-
-### Chapter Number Parsing
-
-The `words_to_int()` function converts English number words to integers (supports up to ~199). Chapter headings in `chapter_outline.md` can use either:
-- Digits: `# Chapter 1`, `# Chapter 23`
-- Words: `# Chapter One`, `# Chapter Twenty-Three`
-
-### Config Structure
-
-The default `config.json` created by `--init`:
-```json
-{
-  "title": "...",
-  "context": {
-    "mode": "last_n_chapters",
-    "last_n_chapters": 3,
-    "last_n_words": 500
-  },
-  "summary": {
-    "max_words": 300
-  }
-}
-```
-
-### Retry Behavior
-
-`--retry N` retries up to N times if the API returns output smaller than `MIN_CHAPTER_SIZE` (500 chars), which indicates an error or content refusal. The failed output is saved to `logs/chNN.failed_output.md`.
-
-### No Automated Tests
-
-There are no automated tests. Manual testing involves creating a story project and running the full workflow.
+Context modes (`config.json` `context.mode`): `budget` (default; most recent whole chapters within `max_words`, 60000), `last_n_chapters`, `last_n_words`.
