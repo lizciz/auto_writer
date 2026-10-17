@@ -9,7 +9,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Literal, NoReturn, Optional, overload
 
 from . import __version__
 
@@ -23,6 +23,7 @@ DEFAULT_PATHS = {
     "outline_master": "chapter_outline.md",
     "outline_review": "outline_review.md",
     "story_arc": "story_arc.md",
+    "characters": "characters.md",
     "outline_dir": "outline",
     "story_dir": "story",
     "bible_dir": "bible",
@@ -80,7 +81,7 @@ def file_sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()[:16]
 
 
-def die(msg: str) -> None:
+def die(msg: str) -> NoReturn:
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(1)
 
@@ -120,6 +121,14 @@ class Project:
 
     # ---------- discovery ----------
 
+    @overload
+    @classmethod
+    def find(cls, start: Optional[str] = None, required: Literal[True] = True) -> "Project": ...
+
+    @overload
+    @classmethod
+    def find(cls, start: Optional[str] = None, *, required: bool) -> Optional["Project"]: ...
+
     @classmethod
     def find(cls, start: Optional[str] = None, required: bool = True) -> Optional["Project"]:
         """Locate the project at or above `start` (default: CWD)."""
@@ -130,7 +139,6 @@ class Project:
         if not required:
             return None
         die(f"Not a story project (no .story/config.json at or above {here}). Run `aw init` first.")
-        raise AssertionError  # unreachable
 
     @classmethod
     def create(cls, root: Path, title: str) -> "Project":

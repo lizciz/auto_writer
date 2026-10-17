@@ -22,7 +22,8 @@ def test_words_to_int():
 
 
 def test_parse_master_outline_ignores_overview_and_parses_words():
-    md = """# Overview
+    md = """# Chapter Outline: "A Story"
+# Overview
 | Ch | Title |
 | 1 | Start |
 

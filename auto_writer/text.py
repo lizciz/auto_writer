@@ -103,6 +103,8 @@ def parse_master_outline(master_md: str) -> Dict[int, str]:
     Parse chapter_outline.md into {chapter_number: brief_markdown}.
     Content for each chapter is all lines until the next '# Chapter ...' heading.
     Anything before the first chapter heading (e.g. an overview table) is ignored.
+    A "Chapter" line without a number (e.g. '# Chapter Outline: "Title"') is not
+    a heading.
     """
     chapters: Dict[int, str] = {}
     cur_num: Optional[int] = None
@@ -115,15 +117,13 @@ def parse_master_outline(master_md: str) -> Dict[int, str]:
 
     for ln in master_md.splitlines():
         m = _CHAPTER_H_RE.match(ln)
-        if not m:
+        token = m.group(1).strip() if m else ""
+        num = int(token) if token.isdigit() else words_to_int(token) if token else None
+        if m is None or num is None:
             cur_buf.append(ln)
             continue
         flush()
-        token = m.group(1).strip()
         title_tail = (m.group(2) or "").strip().strip("*").strip()
-        num = int(token) if token.isdigit() else words_to_int(token)
-        if num is None:
-            raise ValueError(f"Cannot parse chapter number from header: {ln!r}, token={token!r}")
         cur_num = num
         cur_buf = [f"Chapter {cur_num}: {title_tail}" if title_tail else f"Chapter {cur_num}"]
     flush()

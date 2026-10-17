@@ -33,6 +33,7 @@ aw review-outline [--apply]          # outline_review.md; --apply revises the ou
 aw prepare               # outline/chNN.md + story_arc.md
 aw write [N] [--loop] [--max-writes N] [--fix-mode quick|full|none] [--force] [--retry N]
 aw bible [N]             # regenerate stale/missing bibles (or bible N)
+aw characters [--force]  # characters.md: SDXL tag profiles for narrate (after the story is written)
 aw reset N|all
 aw status
 aw prompts [list | show TASK | use TASK VARIANT | fork TASK]
@@ -51,6 +52,7 @@ All commands find the project by walking up from CWD (or `-C PATH`).
 - `writing.py` — `write_chapter`: ensures earlier bibles are current, builds variables (`chapter_variables`), generates, validates/fixes, updates the chapter's bible. The full-mode fixer's output is rejected if it is <80% of the original length. Truncated-ending issues are never sent to the fixer (adding a full stop would hide the truncation).
 - `bible.py` — `bible/chNN.md` is the story state *after* chapter NN, generated from the previous bible + chapter text, so rewriting chapter 4 never sees facts from chapter 7. Staleness propagates down the chain (`stale_bibles`).
 - `text.py` — pure helpers: outline parsing (`# Chapter N: Title`, digits or number words; preamble such as an overview table is ignored), `parse_sections` for `# Section` files, `ending_looks_truncated`, word ranges.
+- `characters.py` — `generate_characters`: plan + latest bible + chapter text (from ch1, within `context.max_words`) → `characters.md` in narrate's format (`### Name` blocks with `description`/`base_tags`/`nude_tags`/`base_negative`). Output is cleaned (no preamble/fences) and checked against comfykit's parser rules (every `###` is a character and needs `base_tags`), cup sizes and names missing from the story.
 - `validate.py` — regex validator (title format, quotes, foreign-script characters, punctuation, auto-wrapped blocks, truncated ending, ...).
 
 ## Prompts
@@ -68,7 +70,7 @@ variables: [plan, bible]
 ...
 ```
 
-Tasks: `plan_questions`, `plan`, `outline`, `outline_review`, `outline_revise`, `writer`, `bible`, `fixer_line`, `fixer_full`.
+Tasks: `plan_questions`, `plan`, `outline`, `outline_review`, `outline_revise`, `writer`, `bible`, `fixer_line`, `fixer_full`, `characters`.
 
 Lookup: `.story/prompts/<task>.md` (project fork) → `~/.config/auto_writer/prompts/<task>/<variant>.md` → bundled `auto_writer/prompts/<task>/<variant>.md`. The variant comes from `config.json` `"prompts": {task: variant}` (default `default`). `.story/prompts/<task>.append.md` is appended to whichever prompt is used. Bundled prompts are generic across stories but tuned for long-form explicit erotic fiction (character defaults, per-scene prose styles, a sexual arc that escalates across chapters, consent as the single hard boundary, adults only); story specifics come from `plan.md` via `{plan}`. The bible's `# Sexual History` table is what lets later chapters escalate instead of repeating. Every logged request records the resolved prompt path and hash.
 
@@ -83,6 +85,7 @@ Keep stable content (plan, arc) in the system message and previous chapters firs
 idea.md → questions.md → plan.md → chapter_outline.md (+ outline_review.md)
 outline/chNN.md, story_arc.md      # from `aw prepare`
 story/chNN.md, bible/chNN.md, logs/
+characters.md                      # from `aw characters`; narrate finds it by walking up from a story file
 ```
 
 Legacy projects: `context.md` is used as the plan if `plan.md` is missing; old `summary/` files are ignored (bibles are generated on the next write).

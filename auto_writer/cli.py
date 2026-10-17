@@ -14,6 +14,7 @@ from storykit.prompts import PromptError, format_prompt_file
 
 from . import __version__
 from .bible import stale_bibles, update_bible
+from .characters import generate_characters
 from .llm import Generator, prompt_library
 from .planning import count_answers, outline, plan, prepare, review_outline
 from .project import (
@@ -167,6 +168,10 @@ def cmd_bible(args, project: Project) -> None:
         update_bible(project, gen, n, plan_text, retries=args.retry)
 
 
+def cmd_characters(args, project: Project) -> None:
+    generate_characters(project, Generator(project), force=args.force, retries=args.retry)
+
+
 def cmd_reset(args, project: Project) -> None:
     target = args.target.strip().lower()
     if target == "all":
@@ -218,6 +223,9 @@ def cmd_status(args, project: Project) -> None:
     print(f"  bibles:   {'all current' if not stale else f'{len(stale)} need regenerating'}")
     for n, reason in stale:
         print(f"    ch{n:02d}: {reason}")
+    chars = project.path("characters")
+    if chars.exists():
+        print(f"  characters: {state(chars)}  ({project.rel(chars)})")
 
 
 def cmd_prompts(args, project: Project) -> None:
@@ -305,7 +313,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Semi-automatic long-form story writer.",
         epilog=(
             "Typical flow: init -> (write idea.md) -> plan -> (answer questions.md) -> plan -> "
-            "outline -> review-outline -> prepare -> write --loop"
+            "outline -> review-outline -> prepare -> write --loop -> characters"
         ),
     )
     p.add_argument("--version", action="version", version=f"auto_writer {__version__}")
@@ -360,6 +368,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("bible", cmd_bible, "Regenerate missing/stale story bibles (or the one for CHAPTER)")
     sp.add_argument("chapter", nargs="?", type=int)
+    add_retry(sp)
+
+    sp = add("characters", cmd_characters, "Generate characters.md: SDXL tag profiles for narrate")
+    sp.add_argument("--force", action="store_true", help="Regenerate even if it exists")
     add_retry(sp)
 
     sp = add("reset", cmd_reset, "Remove a written chapter (or 'all'), its bible and logs")

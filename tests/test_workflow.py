@@ -37,6 +37,21 @@ BIBLE = (
     "# Plan Deviations\nNone\n"
 )
 
+CHARACTERS_REPLY = """Here are the profiles:
+
+```
+### Gary
+
+description: A burly bus driver.
+base_tags: 1boy, male, short grey hair, burly
+nude_tags: large penis
+
+### Zelda
+description: Not in the story.
+**base_tags:** blonde hair, G-cup
+```
+"""
+
 
 class FakeClient:
     """Answers each task based on markers in its prompt; records every call."""
@@ -72,6 +87,8 @@ class FakeClient:
                 reason = "length"
         elif "copy editor" in system:
             text = "Fixed line."
+        elif "SDXL tag profiles" in system:
+            text = CHARACTERS_REPLY
         else:
             raise AssertionError(f"unexpected prompt: {system[:80]!r}")
         self.last_http_debug = {"finish_reason": reason, "usage": None}
@@ -215,3 +232,39 @@ def test_profile_listing_and_names(project, monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     run(monkeypatch, "profile")
     assert "Current project" not in capsys.readouterr().out
+
+
+def test_characters(project, monkeypatch, capsys):
+    proj, client = project
+    with pytest.raises(SystemExit):
+        run(monkeypatch, "characters")  # no plan yet
+    (proj.root / "plan.md").write_text("# Synopsis\nA bus story.\n")
+    proj.story_file(1).write_text("Chapter 1: Bus\n\nGary drove the bus.\n")
+
+    run(monkeypatch, "characters")
+    out = capsys.readouterr().out
+    assert proj.bible_file(1).exists()  # brought up to date first
+    sent = client.calls[-1][-1]["content"]
+    assert "Gary drove the bus." in sent and "Story text (all chapters)" in sent
+    assert "# Story So Far" in sent
+
+    path = proj.root / "characters.md"
+    text = path.read_text()
+    assert "Here are the profiles" not in text and "```" not in text
+    assert text.index("Field reference") < text.index("### Gary")
+    assert "2 characters: Gary, Zelda" in out
+    assert "Zelda: uses a cup size" in out
+    assert "Zelda: name not found" in out
+    assert "Gary: name not found" not in out
+
+    comfykit = pytest.importorskip("comfykit.characters")
+    parsed = comfykit.parse_characters_file(path)
+    assert list(parsed) == ["Gary", "Zelda"]
+    assert parsed["Gary"]["nude_tags"] == "large penis"
+
+    with pytest.raises(SystemExit):
+        run(monkeypatch, "characters")  # exists; needs --force
+    run(monkeypatch, "characters", "--force")
+    assert list((proj.meta_dir / "backup").glob("characters.*.md"))
+    run(monkeypatch, "status")
+    assert "characters: ok" in capsys.readouterr().out

@@ -29,7 +29,8 @@ def _guard_overwrite(project: Project, path: Path, force: bool, command: str) ->
     if not force:
         die(f"{project.rel(path)} already exists. Re-run with `aw {command} --force` to regenerate it.")
     backup = project.backup(path)
-    print(f"Backed up {project.rel(path)} to {project.rel(backup)}")
+    if backup:
+        print(f"Backed up {project.rel(path)} to {project.rel(backup)}")
 
 
 def _write_generated(project: Project, path: Path, text: str, inputs) -> None:
@@ -136,7 +137,7 @@ def review_outline(project: Project, gen: Generator, *, apply: bool = False, ret
         die("The revised outline has no '# Chapter N' headings; keeping the original.")
     backup = project.backup(outline_path)
     _write_generated(project, outline_path, revised.text, [project.plan_path])
-    print(f"Revised outline written (previous version: {project.rel(backup)}).")
+    print("Revised outline written" + (f" (previous version: {project.rel(backup)})." if backup else "."))
 
 
 def prepare(project: Project) -> None:
