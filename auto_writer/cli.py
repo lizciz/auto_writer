@@ -281,9 +281,44 @@ def cmd_reset(args, project: Project) -> None:
         )
 
 
+def has_content(path: Path) -> bool:
+    return path.exists() and bool(strip_comments(read_text(path)))
+
+
+def next_step(project: Project) -> str:
+    """What the user should do next, judged from the files that exist."""
+    idea = project.rel(project.path("idea"))
+    if not has_content(project.path("idea")) and not has_content(project.plan_path):
+        then = "`aw oneshot` (or `aw plan`)" if project.is_short else "`aw plan`"
+        return f"write your idea in {idea}, then run {then}"
+    questions = project.path("questions")
+    if not has_content(project.plan_path):
+        if questions.exists() and not count_answers(read_text(questions)):
+            return f"answer the questions in {project.rel(questions)}, then run `aw plan` (or `aw plan --no-questions`)"
+        return "`aw oneshot`" if project.is_short and not questions.exists() else "`aw plan`"
+    chars = "`aw characters` (optional: image tag profiles for narrate)"
+    if project.is_short:
+        story = project.story_file(1)
+        if not story.exists():
+            return "review plan.md, then `aw write` (or `aw oneshot`)"
+        if project.changed_inputs(story):
+            return "plan.md changed since the story was written: `aw oneshot` rewrites it"
+        return "done" if project.path("characters").exists() else chars
+    master = project.path("outline_master")
+    if not has_content(master):
+        return "review plan.md, then `aw outline`"
+    if not project.outline_nums():
+        return "`aw review-outline` (optional), then `aw prepare`"
+    pending = [n for n in project.outline_nums() if n not in set(project.written_nums())]
+    if pending:
+        more = f" ({len(pending)} left; `aw write --loop` writes them all)" if len(pending) > 1 else ""
+        return f"`aw write` (chapter {pending[0]}){more}"
+    return "done" if project.path("characters").exists() else chars
+
+
 def cmd_status(args, project: Project) -> None:
     def state(path: Path) -> str:
-        if not path.exists() or not strip_comments(read_text(path)):
+        if not has_content(path):
             return "missing"
         changed = project.changed_inputs(path)
         if changed:
@@ -302,22 +337,20 @@ def cmd_status(args, project: Project) -> None:
         story = project.story_file(1)
         words = f"  ({word_count(read_text(story)):,} words)" if story.exists() else ""
         print(f"  story:    {state(story)}{words}  ({project.rel(story)})")
-        chars = project.path("characters")
-        if chars.exists():
-            print(f"  characters: {state(chars)}  ({project.rel(chars)})")
-        return
-    master = project.path("outline_master")
-    n_outline = len(parse_master_outline(read_text(master))) if master.exists() else 0
-    print(f"  outline:  {state(master)}  ({n_outline} chapters, {len(project.outline_nums())} prepared)")
-    written = project.written_nums()
-    print(f"  written:  {len(written)} chapter(s): {', '.join(map(str, written)) or '-'}")
-    stale = stale_bibles(project)
-    print(f"  bibles:   {'all current' if not stale else f'{len(stale)} need regenerating'}")
-    for n, reason in stale:
-        print(f"    ch{n:02d}: {reason}")
+    else:
+        master = project.path("outline_master")
+        n_outline = len(parse_master_outline(read_text(master))) if master.exists() else 0
+        print(f"  outline:  {state(master)}  ({n_outline} chapters, {len(project.outline_nums())} prepared)")
+        written = project.written_nums()
+        print(f"  written:  {len(written)} chapter(s): {', '.join(map(str, written)) or '-'}")
+        stale = stale_bibles(project)
+        print(f"  bibles:   {'all current' if not stale else f'{len(stale)} need regenerating'}")
+        for n, reason in stale:
+            print(f"    ch{n:02d}: {reason}")
     chars = project.path("characters")
     if chars.exists():
         print(f"  characters: {state(chars)}  ({project.rel(chars)})")
+    print(f"\nNext: {next_step(project)}")
 
 
 def cmd_prompts(args, project: Project) -> None:
@@ -426,105 +459,223 @@ def _warn_legacy_prompts(project: Project) -> None:
 # ============================== Parser ==============================
 
 
+OVERVIEW = """\
+Semi-automatic story writer: you write a rough idea, the model plans and
+writes the story, and you can review and edit every file in between.
+
+Every command except `init` and `profile` works on the story project in the
+current directory (or above it, or the one given with -C). Create the project
+first, then cd into it.
+
+Start a project:
+  init TITLE [--short]    Create a project folder with idea.md to write in
+                          (--short: a standalone short story, ~3-7k words)
+  profile [NAME]          List API profiles, or set the project's profile
+  profile --global NAME   Set the default profile for new projects
+
+Short story (a project made with `init --short`):
+  oneshot ["IDEA"]        Plan and write the whole story in one go. Re-run it
+                          after editing idea.md or plan.md to redo what changed
+  or step by step:        plan -> (edit plan.md) -> write
+
+Long story, chapter by chapter (in this order):
+  plan                    idea.md -> questions.md; answer, run again -> plan.md
+  outline                 plan.md -> chapter_outline.md
+  review-outline          Optional: critique the outline (--apply revises it)
+  prepare                 chapter_outline.md -> outline/chNN.md, story_arc.md
+  write [N] [--loop]      Write the next chapter (or N; --loop: all the rest)
+
+After writing (both kinds):
+  characters              characters.md: image tag profiles for narrate
+
+Inspect and repair:
+  status                  What exists, what is out of date, what is next
+  reset N|all             Delete a written chapter, its bible and logs
+  bible [N]               Regenerate stale story bibles (long stories)
+  title TEXT              Rename the story
+  prompts                 List, show, fork or switch prompt sets
+  migrate                 Convert a project made by an old version
+
+Examples:
+  aw profile --global venice_glm_5.0       # once, before the first project
+  aw init "The Night Bus" --short
+  cd "The Night Bus"
+  aw oneshot "A woman falls for the driver of the last bus home."
+
+  aw init "Summer House"
+  cd "Summer House"                         # then write your idea in idea.md
+  aw plan                                   # then answer questions.md
+  aw plan                                   # then review plan.md
+  aw outline && aw prepare && aw write --loop
+
+  aw status                                 # where am I, and what next?
+
+Run `aw COMMAND -h` for details on a command."""
+
+FIX_MODE_HELP = (
+    "How validation issues are fixed: quick rewrites only the flagged lines (default), "
+    "full rewrites the whole text, none only reports them"
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
+    raw = argparse.RawDescriptionHelpFormatter
     p = argparse.ArgumentParser(
-        prog="aw",
-        description="Semi-automatic story writer: long-form chapter by chapter, or short stories in one go.",
-        epilog=(
-            "Typical flow: init -> (write idea.md) -> plan -> (answer questions.md) -> plan -> "
-            "outline -> review-outline -> prepare -> write --loop -> characters.  "
-            "Short story: init --short -> (write idea.md) -> oneshot -> characters"
-        ),
+        prog="aw", usage="aw [-C PROJECT] COMMAND [options]", description=OVERVIEW, formatter_class=raw,
     )
     p.add_argument("--version", action="version", version=f"auto_writer {__version__}")
-    p.add_argument("-C", "--project", help="Project directory (default: nearest one at or above CWD)")
-    sub = p.add_subparsers(dest="command", metavar="COMMAND")
+    p.add_argument("-C", "--project", help="Project directory (default: the nearest one at or above CWD)")
+    sub = p.add_subparsers(dest="command", metavar="COMMAND", help=argparse.SUPPRESS)
 
-    def add(name, func, help_text):
-        sp = sub.add_parser(name, help=help_text, description=help_text)
+    def add(name, func, summary, details=""):
+        sp = sub.add_parser(
+            name, prog=f"aw {name}", description=summary + ("\n\n" + details if details else ""), formatter_class=raw,
+        )
         sp.set_defaults(func=func)
         return sp
 
     def add_retry(sp):
         sp.add_argument("--retry", type=int, default=2, help="Retries on API errors or refusals (default: 2)")
 
-    sp = add("init", cmd_init, "Create a new story project")
-    sp.add_argument("title")
-    sp.add_argument("--dir", help="Directory name (default: sanitized title)")
+    sp = add(
+        "init", cmd_init, "Create a new story project folder.",
+        "Creates TITLE/ in the current directory (or --path) with idea.md, and copies the API\n"
+        "profile into it (--profile, else the global default).\n\n"
+        "Next: cd into the folder and write your idea in idea.md. Then:\n"
+        "  long story:   aw plan\n"
+        "  short story:  aw oneshot   (or pass the idea directly: aw oneshot \"IDEA\")",
+    )
+    sp.add_argument("title", help="The story title (also the folder name, unless --dir)")
+    sp.add_argument("--short", action="store_true", help="A standalone short story (~3-7k words) written in one go")
+    sp.add_argument("--dir", help="Folder name (default: the title, sanitized)")
     sp.add_argument("--path", help="Parent directory (default: CWD)")
     sp.add_argument(
         "--profile", help="API profile: a name from ~/.config/llm-profiles or a path (default: the global default)"
     )
     sp.add_argument("--set", help="Prompt set (default: default); see `aw prompts`")
-    sp.add_argument("--short", action="store_true", help="A standalone short story written in one go")
 
     sp = add(
-        "profile", cmd_profile,
-        "Set the API profile by name (from ~/.config/llm-profiles) or path; without an argument, list profiles",
+        "profile", cmd_profile, "Show or set the API profile.",
+        "Profiles are JSON files in ~/.config/llm-profiles, shared by all tools.\n\n"
+        "  aw profile                 list profiles, the project's and the global default\n"
+        "  aw profile NAME            copy NAME into this project (.story/profile.json)\n"
+        "  aw profile --global NAME   default for new projects (and projects without one)\n"
+        "  aw profile --global --unset",
     )
-    sp.add_argument("source", nargs="?")
+    sp.add_argument("source", nargs="?", metavar="NAME", help="Profile name or path to a JSON file")
     sp.add_argument(
         "--global", dest="is_global", action="store_true",
         help="Set (or show) the default profile for new projects instead",
     )
     sp.add_argument("--unset", action="store_true", help="With --global: remove the default profile")
 
-    sp = add("title", cmd_title, "Change the story title")
+    sp = add(
+        "oneshot", cmd_oneshot, "Short stories: plan and write the whole story in one go.",
+        "Runs in a project made with `aw init --short`. Writes plan.md (the model decides\n"
+        "everything and lists its choices under # Assumptions, no questions), then the story\n"
+        "in story/ch01.md, then validates and fixes it.\n\n"
+        "Run it again after editing to redo only what is out of date:\n"
+        "  idea changed  -> new plan and new story\n"
+        "  plan edited   -> new story\n"
+        "  nothing       -> nothing (use --force to redo both)\n"
+        "Replaced files are backed up in .story/backup/.\n\n"
+        "Prefer to answer a few questions first? Use `aw plan`, then `aw write`.",
+    )
+    sp.add_argument("idea", nargs="?", help="The idea text; replaces idea.md (default: use idea.md)")
+    sp.add_argument("--force", action="store_true", help="Regenerate the plan and the story")
+    sp.add_argument("--fix-mode", choices=["quick", "full", "none"], default="quick", help=FIX_MODE_HELP)
+    add_retry(sp)
+
+    sp = add(
+        "plan", cmd_plan, "Develop idea.md into plan.md.",
+        "First run: writes questions.md. Answer the questions you care about (blank answers\n"
+        "accept the suggested default), then run `aw plan` again to get plan.md.\n"
+        "Review and edit plan.md before continuing; it is the story's canon.\n\n"
+        "Next: long story `aw outline`; short story `aw write`.",
+    )
+    sp.add_argument("--no-questions", action="store_true", help="Skip the question round; the model decides")
+    sp.add_argument("--force", action="store_true", help="Regenerate plan.md even if it exists (backed up)")
+    add_retry(sp)
+
+    sp = add(
+        "outline", cmd_outline, "Long stories: generate chapter_outline.md from plan.md.",
+        "Edit the outline freely. Next: `aw review-outline` (optional), then `aw prepare`.",
+    )
+    sp.add_argument("--force", action="store_true", help="Regenerate even if it exists (backed up)")
+    add_retry(sp)
+
+    sp = add(
+        "review-outline", cmd_review_outline, "Long stories: critique the outline against the plan.",
+        "Writes outline_review.md. Apply what you agree with by editing chapter_outline.md,\n"
+        "or let the model do it with --apply. Next: `aw prepare`.",
+    )
+    sp.add_argument("--apply", action="store_true", help="Also revise chapter_outline.md from the review")
+    add_retry(sp)
+
+    add(
+        "prepare", cmd_prepare, "Long stories: split the outline into per-chapter files.",
+        "chapter_outline.md -> outline/chNN.md and story_arc.md. No API call.\n"
+        "Re-run it whenever you edit chapter_outline.md. Next: `aw write`.",
+    )
+
+    sp = add(
+        "write", cmd_write, "Write the next chapter, or the short story.",
+        "Long story: writes the first unwritten chapter (or CHAPTER) to story/chNN.md, validates\n"
+        "and fixes it, then updates its story bible. --loop keeps going until all are written.\n"
+        "Short story: writes the whole story from plan.md to story/ch01.md.\n\n"
+        "To rewrite: `aw write N --force` (backed up), or `aw reset N` then `aw write N`.",
+    )
+    sp.add_argument("chapter", nargs="?", type=int, help="Chapter number (default: the next unwritten one)")
+    sp.add_argument("--loop", action="store_true", help="Keep writing the following unwritten chapters")
+    sp.add_argument("--max-writes", type=int, metavar="N", help="With --loop: stop after N chapters")
+    sp.add_argument("--force", action="store_true", help="Overwrite an existing chapter or story (backed up)")
+    sp.add_argument("--fix-mode", choices=["quick", "full", "none"], default="quick", help=FIX_MODE_HELP)
+    add_retry(sp)
+
+    sp = add(
+        "characters", cmd_characters, "Generate characters.md: image tag profiles for narrate.",
+        "Run after the story is written. Uses plan.md, the story text and (long stories) the\n"
+        "latest bible. narrate finds characters.md for any story file in this folder.",
+    )
+    sp.add_argument("--force", action="store_true", help="Regenerate even if it exists (backed up)")
+    add_retry(sp)
+
+    add(
+        "status", cmd_status, "Show what exists, what is out of date and what to run next.",
+    )
+
+    sp = add(
+        "reset", cmd_reset, "Delete a written chapter (or all), its bible and its logs.",
+        "Short stories: `aw reset 1` deletes the story. Later chapters' bibles are regenerated\n"
+        "on the next write.",
+    )
+    sp.add_argument("target", metavar="N|all")
+
+    sp = add(
+        "bible", cmd_bible, "Long stories: regenerate missing or stale story bibles.",
+        "bible/chNN.md is the story state after chapter NN. `aw write` keeps them current\n"
+        "automatically; run this after editing chapters by hand to update them up front.",
+    )
+    sp.add_argument("chapter", nargs="?", type=int, help="Regenerate only this chapter's bible")
+    add_retry(sp)
+
+    sp = add("title", cmd_title, "Change the story title.")
     sp.add_argument("text")
 
-    sp = add("plan", cmd_plan, "Develop idea.md into plan.md (asks questions first by default)")
-    sp.add_argument("--no-questions", action="store_true", help="Skip the question round; the model decides")
-    sp.add_argument("--force", action="store_true", help="Regenerate plan.md even if it exists")
-    add_retry(sp)
-
-    sp = add("outline", cmd_outline, "Generate chapter_outline.md from plan.md")
-    sp.add_argument("--force", action="store_true", help="Regenerate even if it exists")
-    add_retry(sp)
-
-    sp = add("review-outline", cmd_review_outline, "Critique the outline against the plan")
-    sp.add_argument("--apply", action="store_true", help="Also revise the outline from the review")
-    add_retry(sp)
-
-    add("prepare", cmd_prepare, "Split chapter_outline.md into outline/chNN.md and story_arc.md")
-
     sp = add(
-        "oneshot", cmd_oneshot,
-        "Short stories: plan (no questions) and write the story in one go, redoing only what is out of date",
-    )
-    sp.add_argument("idea", nargs="?", help="The idea text (default: idea.md)")
-    sp.add_argument("--fix-mode", choices=["quick", "full", "none"], default="quick")
-    sp.add_argument("--force", action="store_true", help="Regenerate the plan and the story")
-    add_retry(sp)
-
-    sp = add("write", cmd_write, "Write the next unwritten chapter (or CHAPTER); short stories: the story")
-    sp.add_argument("chapter", nargs="?", type=int)
-    sp.add_argument("--loop", action="store_true", help="Keep writing following unwritten chapters")
-    sp.add_argument("--max-writes", type=int, help="Stop after this many chapters")
-    sp.add_argument("--fix-mode", choices=["quick", "full", "none"], default="quick")
-    sp.add_argument("--force", action="store_true", help="Overwrite CHAPTER if it already exists")
-    add_retry(sp)
-
-    sp = add("bible", cmd_bible, "Regenerate missing/stale story bibles (or the one for CHAPTER)")
-    sp.add_argument("chapter", nargs="?", type=int)
-    add_retry(sp)
-
-    sp = add("characters", cmd_characters, "Generate characters.md: SDXL tag profiles for narrate")
-    sp.add_argument("--force", action="store_true", help="Regenerate even if it exists")
-    add_retry(sp)
-
-    sp = add("reset", cmd_reset, "Remove a written chapter (or 'all'), its bible and logs")
-    sp.add_argument("target")
-
-    add("status", cmd_status, "Show planning and writing progress")
-
-    sp = add(
-        "prompts", cmd_prompts,
-        "List prompts, show or fork TASK, or select a prompt set (use SET, or use SET TASK for one task)",
+        "prompts", cmd_prompts, "List, show, fork or switch prompts.",
+        "Prompts come in sets (styles); `default` is complete, other sets only replace some tasks.\n\n"
+        "  aw prompts                 list every task and the file it uses\n"
+        "  aw prompts show TASK       print the prompt\n"
+        "  aw prompts use SET         use SET for this project\n"
+        "  aw prompts use SET TASK    use SET for one task only\n"
+        "  aw prompts fork TASK       copy the prompt into .story/prompts/ to edit for this project\n\n"
+        "Your own sets go in ~/.config/auto_writer/prompts/<set>/<task>.md.",
     )
     sp.add_argument("action", nargs="?", choices=["list", "show", "use", "fork"])
     sp.add_argument("names", nargs="*", metavar="SET|TASK")
 
-    add("migrate", cmd_migrate, "Convert a project's legacy prompt files to the new layout")
+    add("migrate", cmd_migrate, "Convert a project's legacy prompt files to the current layout.")
     return p
 
 
@@ -540,7 +691,15 @@ def main() -> None:
     if args.func is cmd_profile and (args.is_global or not args.source):
         cmd_profile(args, Project.find(args.project, required=False))
         return
-    project = Project.find(args.project)
+    project = Project.find(args.project, required=False)
+    if project is None:
+        here = Path(args.project).resolve() if args.project else Path.cwd()
+        die(
+            f"`aw {args.command}` works on a story project, and there is none at or above {here}.\n"
+            'Create one first:  aw init "Title"           (long story)\n'
+            '              or:  aw init "Title" --short   (short story)\n'
+            "then cd into the new folder (or pass -C FOLDER)."
+        )
     if args.func not in (cmd_migrate, cmd_prompts):
         _warn_legacy_prompts(project)
     try:

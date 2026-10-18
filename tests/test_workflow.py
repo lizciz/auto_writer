@@ -398,3 +398,39 @@ def test_global_default_profile(project, monkeypatch, tmp_path, capsys):
     proj.profile_path.unlink()
     with pytest.raises(SystemExit):
         load_profile(proj)
+
+
+def test_help_overview_lists_every_command():
+    parser = cli.build_parser()
+    commands = next(a for a in parser._actions if isinstance(a, cli.argparse._SubParsersAction)).choices
+    for name in commands:
+        assert f"\n  {name}" in cli.OVERVIEW, f"{name} missing from the help overview"
+
+
+def test_status_next_step(project, monkeypatch, capsys):
+    proj, _ = project
+
+    def next_line():
+        run(monkeypatch, "status")
+        return capsys.readouterr().out.split("Next: ")[1]
+
+    assert "write your idea in idea.md, then run `aw plan`" in next_line()
+    (proj.root / "idea.md").write_text("A woman on a bus.\n")
+    run(monkeypatch, "plan")
+    assert next_line().startswith("answer the questions in questions.md")
+    run(monkeypatch, "plan", "--no-questions")
+    assert "`aw outline`" in next_line()
+    run(monkeypatch, "outline")
+    assert "`aw prepare`" in next_line()
+    run(monkeypatch, "prepare")
+    assert "`aw write` (chapter 1) (2 left; `aw write --loop`" in next_line()
+    run(monkeypatch, "write", "--loop")
+    assert "`aw characters`" in next_line()
+
+
+def test_outside_project_explains_init(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        run(monkeypatch, "oneshot", "My idea")
+    err = capsys.readouterr().err
+    assert "`aw oneshot` works on a story project" in err and 'aw init "Title" --short' in err

@@ -37,7 +37,7 @@ aw oneshot [IDEA] [--force] [--fix-mode ...]   # short only: idea -> plan (no qu
 aw bible [N]             # regenerate stale/missing bibles (or bible N)
 aw characters [--force]  # characters.md: SDXL tag profiles for narrate (after the story is written)
 aw reset N|all
-aw status
+aw status                # what exists, what is stale, and the next command to run
 aw prompts [list | show TASK | use SET [TASK] | fork TASK]
 aw migrate               # convert legacy .story/system_prompt.md + user_prompt.md
 vc [--short] story/ch*.md   # standalone validator (validate_chapter); --short: first line is the story title
@@ -47,7 +47,7 @@ All commands find the project by walking up from CWD (or `-C PATH`).
 
 ## Architecture (`auto_writer/`)
 
-- `cli.py` — argparse subcommands; thin wrappers around the modules below.
+- `cli.py` — argparse subcommands; thin wrappers around the modules below. `aw -h` shows the hand-written `OVERVIEW` (commands grouped by workflow; a test checks every subcommand is in it), each `aw CMD -h` explains where the command fits and what comes next, and `aw status` ends with `next_step()`.
 - `project.py` — user-wide settings in `~/.config/auto_writer/config.json` (`global_config()`; `default_profile` is stored by name when it lives in the shared profiles dir, else as a path; `aw init` and `load_profile` copy it into a project that has none). `Project`: config (merged with `DEFAULT_CONFIG`), paths, and generated-file bookkeeping in `.story/state.json` (`record()` stores input/output hashes; `changed_inputs()` drives staleness warnings; `backup()` copies to `.story/backup/` before overwriting).
 - `llm.py` — `Generator.run(task, variables, log_name, ...)`: resolves the task prompt, renders it, calls the API, logs `logs/<name>.<task>.{prompt.md,request.json,thinking.md}`. Continues responses that stop early (`finish_reason == "length"`, or a truncated-looking ending when the provider reports no reason), retries API errors and too-small outputs (refusals) with backoff.
 - `planning.py` — `plan` (questions round by default; `short_questions`/`short_plan` for short stories), `outline`, `review_outline`, `prepare`.
