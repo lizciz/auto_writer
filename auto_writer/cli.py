@@ -497,7 +497,7 @@ Inspect and repair:
   migrate                 Convert a project made by an old version
 
 Examples:
-  aw profile --global venice_glm_5.0       # once, before the first project
+  aw profile --global venice_glm_5.2       # once, before the first project
   aw init "The Night Bus" --short
   cd "The Night Bus"
   aw oneshot "A woman falls for the driver of the last bus home."
