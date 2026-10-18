@@ -42,7 +42,12 @@ def sanitize_dirname(s: str) -> str:
 def cmd_init(args: argparse.Namespace) -> None:
     base = Path(args.path).resolve() if args.path else Path.cwd()
     root = base / sanitize_dirname(args.dir or args.title)
+    if args.set and args.set not in prompt_library().sets():
+        die(f"Unknown prompt set '{args.set}'. Available: {', '.join(prompt_library().sets())}")
     project = Project.create(root, args.title)
+    if args.set:
+        project.set_config("prompt_set", args.set)
+        print(f"Using prompt set '{args.set}'.")
     idea = project.path("idea")
     if not idea.exists():
         write_text(idea, read_text(PACKAGE_DIR / "templates" / "idea.md"))
@@ -230,40 +235,67 @@ def cmd_status(args, project: Project) -> None:
 
 def cmd_prompts(args, project: Project) -> None:
     lib = prompt_library()
-    selected = project.config.get("prompts", {})
+    overrides = dict(project.config.get("prompts", {}))
+    project_set = project.config.get("prompt_set") or "default"
     action = args.action or "list"
+    names = args.names
 
     if action == "list":
-        print(f"User prompts dir:    {lib.user_dir}")
+        print(f"Prompt set:          {project_set}   (available: {', '.join(lib.sets())})")
+        print(f"Bundled sets:        {lib.bundled_dir}")
+        print(f"User sets:           {lib.user_dir}")
         print(f"Project prompts dir: {project.prompts_dir}\n")
         for task in lib.tasks():
-            prompt = lib.resolve(task, selected.get(task, "default"), project.prompts_dir)
-            print(f"{task:<16} {prompt.origin:<8} {prompt.variant:<12} {prompt.path}")
+            prompt = lib.resolve(task, project.prompt_set(task), project.prompts_dir)
+            if prompt.origin == "project":
+                source = "project fork"
+            else:
+                source = f"{prompt.source_set} ({prompt.origin})"
+                if prompt.inherited:
+                    source += f", inherited: '{prompt.prompt_set}' has none"
+            if task in overrides:
+                source += "  [per-task override]"
+            print(f"{task:<16} {source}")
+            print(f"{'':<16} {prompt.path}")
             if prompt.addendum_path:
                 print(f"{'':<16} + addendum {prompt.addendum_path}")
-            others = [v for v in lib.variants(task) if v != prompt.variant]
-            if others:
-                print(f"{'':<16} other variants: {', '.join(others)}")
+        print("\nChange with: aw prompts use SET [TASK]")
         return
 
-    if not args.task:
+    if action == "use":
+        if not names:
+            die(f"`aw prompts use` needs a set name. Sets: {', '.join(lib.sets())}")
+        new_set, task = names[0], (names[1] if len(names) > 1 else None)
+        if task is None:
+            if new_set not in lib.sets():
+                die(f"Unknown prompt set '{new_set}'. Available: {', '.join(lib.sets())}")
+            project.set_config("prompt_set", new_set)
+            print(f"Project now uses prompt set '{new_set}'.")
+            if overrides:
+                print("Per-task overrides still apply: " + ", ".join(f"{t}={v}" for t, v in overrides.items()))
+            return
+        prompt = lib.resolve(task, new_set)  # validates set and task
+        if new_set == project_set:
+            overrides.pop(task, None)
+        else:
+            overrides[task] = new_set
+        project.set_config("prompts", overrides)
+        print(f"Project now uses set '{new_set}' for '{task}'" + (" (inherited from default)." if prompt.inherited else "."))
+        return
+
+    if not names:
         die(f"`aw prompts {action}` needs a task name. Tasks: {', '.join(lib.tasks())}")
-    task = args.task
+    task = names[0]
     if action == "show":
-        prompt = lib.resolve(task, selected.get(task, "default"), project.prompts_dir)
+        prompt = lib.resolve(task, project.prompt_set(task), project.prompts_dir)
         print(f"# {prompt.path} ({prompt.origin})")
         if prompt.addendum_path:
             print(f"# + {prompt.addendum_path}")
         print(f"# variables used: {', '.join(prompt.used_variables())}\n")
         print(f"=== system ===\n{prompt.system}\n\n=== user ===\n{prompt.user}")
-    elif action == "use":
-        variant = args.variant or "default"
-        lib.resolve(task, variant)  # validate it exists
-        project.set_config("prompts", {**selected, task: variant})
-        print(f"Project now uses variant '{variant}' for '{task}'.")
     elif action == "fork":
         try:
-            dest = lib.fork(task, project.prompts_dir, selected.get(task, "default"))
+            dest = lib.fork(task, project.prompts_dir, project.prompt_set(task))
         except PromptError as e:
             die(str(e))
         print(f"Copied to {dest}. Edit it there; it now overrides the shared prompt for this project.")
@@ -333,6 +365,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dir", help="Directory name (default: sanitized title)")
     sp.add_argument("--path", help="Parent directory (default: CWD)")
     sp.add_argument("--profile", help="API profile: a name from ~/.config/llm-profiles or a path")
+    sp.add_argument("--set", help="Prompt set (default: default); see `aw prompts`")
 
     sp = add(
         "profile", cmd_profile,
@@ -379,10 +412,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     add("status", cmd_status, "Show planning and writing progress")
 
-    sp = add("prompts", cmd_prompts, "List, show, select or fork prompts")
+    sp = add(
+        "prompts", cmd_prompts,
+        "List prompts, show or fork TASK, or select a prompt set (use SET, or use SET TASK for one task)",
+    )
     sp.add_argument("action", nargs="?", choices=["list", "show", "use", "fork"])
-    sp.add_argument("task", nargs="?")
-    sp.add_argument("variant", nargs="?")
+    sp.add_argument("names", nargs="*", metavar="SET|TASK")
 
     add("migrate", cmd_migrate, "Convert a project's legacy prompt files to the new layout")
     return p

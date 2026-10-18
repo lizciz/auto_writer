@@ -24,7 +24,7 @@ pipx inject auto-writer --editable ../storykit
 User workflow (each step writes a file the user may edit before the next):
 
 ```bash
-aw init "Title" [--profile NAME]     # creates idea.md
+aw init "Title" [--profile NAME] [--set SET]   # creates idea.md
 aw profile [NAME|PATH]   # no arg: list shared ~/.config/llm-profiles/*.json (storykit.profiles) + current; else copy into .story/profile.json
 aw plan                  # 1st run: questions.md; after answering: plan.md
 aw plan --no-questions   # skip the question round; model decides, lists # Assumptions
@@ -36,7 +36,7 @@ aw bible [N]             # regenerate stale/missing bibles (or bible N)
 aw characters [--force]  # characters.md: SDXL tag profiles for narrate (after the story is written)
 aw reset N|all
 aw status
-aw prompts [list | show TASK | use TASK VARIANT | fork TASK]
+aw prompts [list | show TASK | use SET [TASK] | fork TASK]
 aw migrate               # convert legacy .story/system_prompt.md + user_prompt.md
 vc story/ch*.md          # standalone validator (validate_chapter)
 ```
@@ -72,7 +72,7 @@ variables: [plan, bible]
 
 Tasks: `plan_questions`, `plan`, `outline`, `outline_review`, `outline_revise`, `writer`, `bible`, `fixer_line`, `fixer_full`, `characters`.
 
-Lookup: `.story/prompts/<task>.md` (project fork) → `~/.config/auto_writer/prompts/<task>/<variant>.md` → bundled `auto_writer/prompts/<task>/<variant>.md`. The variant comes from `config.json` `"prompts": {task: variant}` (default `default`). `.story/prompts/<task>.append.md` is appended to whichever prompt is used. Bundled prompts are generic across stories but tuned for long-form explicit erotic fiction (character defaults, per-scene prose styles, a sexual arc that escalates across chapters, consent as the single hard boundary, adults only); story specifics come from `plan.md` via `{plan}`. The bible's `# Sexual History` table is what lets later chapters escalate instead of repeating. Every logged request records the resolved prompt path and hash.
+Prompts are grouped into *prompt sets* (one directory per style: `prompts/<set>/<task>.md`). `default/` is complete; other sets hold only the tasks that differ and inherit the rest from `default` (`Generator.run` prints a note the first time a task is inherited). Lookup: `.story/prompts/<task>.md` (project fork) → `~/.config/auto_writer/prompts/<set>/<task>.md` → bundled `auto_writer/prompts/<set>/<task>.md` → the same for `default`. The set comes from `config.json` `"prompt_set"` (default `default`); `"prompts": {task: set}` overrides single tasks. `.story/prompts/<task>.append.md` is appended to whichever prompt is used. Form-specific tasks get their own task name rather than their own directory: a task is defined by the variables it receives. The bundled `default` set is generic across stories but tuned for long-form explicit erotic fiction (character defaults, per-scene prose styles, a sexual arc that escalates across chapters, consent as the single hard boundary, adults only); story specifics come from `plan.md` via `{plan}`. The bible's `# Sexual History` table is what lets later chapters escalate instead of repeating. Every logged request records the set, the set the file came from, the resolved path and hash.
 
 Writer variables: `{plan}` (whole plan), each plan section by normalized name (`{synopsis}`, `{character_profiles}`, `{fixed_facts}`, ...), `{story_arc}`, `{bible}`, `{recent_context}`, `{context_label}`, `{chapter_outline}`, `{chapter_specific_instructions}`, `{chapter_number}`, `{chapter_title}`, `{story_title}`, `{target_word_count}`, `{length_instruction}`; legacy aliases `{title}`, `{chapter_count}`, `{previous_summary}` (= bible), `{kinks}`.
 

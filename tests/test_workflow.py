@@ -268,3 +268,32 @@ def test_characters(project, monkeypatch, capsys):
     assert list((proj.meta_dir / "backup").glob("characters.*.md"))
     run(monkeypatch, "status")
     assert "characters: ok" in capsys.readouterr().out
+
+
+def test_prompt_sets(project, monkeypatch, tmp_path, capsys):
+    proj, client = project
+    user_sets = tmp_path / "no_user_config" / "prompts"
+    (user_sets / "noir").mkdir(parents=True)
+    (user_sets / "noir" / "plan.md").write_text("=== system ===\nturn an author's rough idea (noir)\n=== user ===\n{idea}")
+
+    with pytest.raises(SystemExit):
+        run(monkeypatch, "prompts", "use", "nope")
+    run(monkeypatch, "prompts", "use", "noir")
+    assert Project(proj.root).config["prompt_set"] == "noir"
+    run(monkeypatch, "prompts")
+    out = capsys.readouterr().out
+    assert "plan             noir (user)" in out
+    assert "inherited: 'noir' has none" in out
+
+    (proj.root / "idea.md").write_text("Idea.\n")
+    run(monkeypatch, "plan", "--no-questions")
+    assert "(noir)" in client.calls[-1][0]["content"]
+    req = json.loads(proj.log_file("plan.plan.request.json").read_text())
+    assert (req["prompt_set"], req["prompt_source_set"]) == ("noir", "noir")
+
+    # A per-task override back to the base set; selecting the project's set again clears it.
+    run(monkeypatch, "prompts", "use", "default", "plan")
+    assert Project(proj.root).config["prompts"] == {"plan": "default"}
+    assert Project(proj.root).prompt_set("plan") == "default"
+    run(monkeypatch, "prompts", "use", "noir", "plan")
+    assert Project(proj.root).config["prompts"] == {}

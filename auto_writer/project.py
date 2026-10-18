@@ -43,6 +43,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "generation": {
         "max_continuations": 2,
     },
+    # Prompt set for every task; "prompts" maps task -> set to override single tasks.
+    "prompt_set": "default",
     "prompts": {},
 }
 
@@ -186,8 +188,9 @@ class Project:
             return legacy
         return plan
 
-    def prompt_variant(self, task: str) -> str:
-        return self.config.get("prompts", {}).get(task, "default")
+    def prompt_set(self, task: str) -> str:
+        """The prompt set to use for a task: a per-task override, else the project's set."""
+        return self.config.get("prompts", {}).get(task) or self.config.get("prompt_set") or "default"
 
     # ---------- chapters ----------
 

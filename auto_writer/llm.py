@@ -27,7 +27,7 @@ def prompt_library() -> PromptLibrary:
 
 
 def resolve_prompt(project: Project, task: str) -> Prompt:
-    return prompt_library().resolve(task, project.prompt_variant(task), project.prompts_dir)
+    return prompt_library().resolve(task, project.prompt_set(task), project.prompts_dir)
 
 
 def load_profile(project: Project) -> Dict[str, Any]:
@@ -68,6 +68,7 @@ class Generator:
         self.profile = profile if profile is not None else load_profile(project)
         self.client = client or OpenAICompatClient(self.profile, exclude_keys=_INTERNAL_PROFILE_KEYS)
         self._warned_tokens = False
+        self._noted_inherited: set = set()
 
     @property
     def model(self) -> str:
@@ -110,6 +111,9 @@ class Generator:
             min_chars: Outputs shorter than this count as failures (refusals/errors).
         """
         prompt = resolve_prompt(self.project, task)
+        if prompt.inherited and task not in self._noted_inherited:
+            self._noted_inherited.add(task)
+            print(f"NOTE: prompt set '{prompt.prompt_set}' has no '{task}'; using {prompt.source_set}'s.")
         missing = prompt.missing_variables(variables)
         if missing:
             print(f"WARNING: prompt '{task}' ({prompt.path}) uses unknown variables: {', '.join(missing)}")
@@ -167,7 +171,8 @@ class Generator:
             {
                 "ts": now_iso(),
                 "task": prompt.task,
-                "prompt_variant": prompt.variant,
+                "prompt_set": prompt.prompt_set,
+                "prompt_source_set": prompt.source_set,
                 "prompt_path": str(prompt.path),
                 "prompt_origin": prompt.origin,
                 "prompt_addendum": str(prompt.addendum_path) if prompt.addendum_path else None,
