@@ -1,3 +1,3 @@
-"""auto_writer — semi-automatic long-form story writer."""
+"""auto_writer — semi-automatic story writer."""
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"

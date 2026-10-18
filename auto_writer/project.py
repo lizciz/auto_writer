@@ -31,6 +31,9 @@ DEFAULT_PATHS = {
 }
 
 DEFAULT_CONFIG: Dict[str, Any] = {
+    # full: planned, outlined, written chapter by chapter with bibles.
+    # short: a standalone short story written in one go from plan.md (story/ch01.md).
+    "form": "full",
     "context": {
         # budget: as many of the most recent whole chapters as fit in max_words
         # last_n_chapters: the last N whole chapters
@@ -187,6 +190,10 @@ class Project:
         if not plan.exists() and legacy.exists():
             return legacy
         return plan
+
+    @property
+    def is_short(self) -> bool:
+        return self.config.get("form") == "short"
 
     def prompt_set(self, task: str) -> str:
         """The prompt set to use for a task: a per-task override, else the project's set."""

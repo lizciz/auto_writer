@@ -120,7 +120,8 @@ def looks_like_sentence(line: str) -> bool:
     return True
 
 
-def check_title_lines(path: Path, lines: List[str]) -> List[Tuple[int, str]]:
+def check_title_lines(path: Path, lines: List[str], short: bool = False) -> List[Tuple[int, str]]:
+    """Check the first line: 'Chapter N: Subtitle', or (short) any story title."""
     errors: List[Tuple[int, str]] = []
 
     # Find first non-empty line
@@ -134,6 +135,11 @@ def check_title_lines(path: Path, lines: List[str]) -> List[Tuple[int, str]]:
 
     if first_idx is None:
         errors.append((1, "Missing title (file is empty)"))
+        return errors
+
+    if short:
+        if first_line.lstrip().startswith("#"):
+            errors.append((first_idx, "Title line should be plain text, not a Markdown heading"))
         return errors
 
     m = TITLE_RE.match(first_line)
@@ -368,7 +374,8 @@ def _is_auto_wrapped_block(consecutive_lines: List[str], all_lines: List[str], s
     return False
 
 
-def validate_file(path: Path, strip_asterisks: bool) -> list[tuple[int, str]]:
+def validate_file(path: Path, strip_asterisks: bool, short: bool = False) -> list[tuple[int, str]]:
+    """Validate a chapter, or with short=True a standalone story that starts with its title."""
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
@@ -383,10 +390,13 @@ def validate_file(path: Path, strip_asterisks: bool) -> list[tuple[int, str]]:
     lines = text.splitlines(keepends=True)
     errors: List[Tuple[int, str]] = []
 
-    errors.extend(check_title_lines(path, lines))
+    errors.extend(check_title_lines(path, lines, short))
 
+    # A story title is not a sentence ("Chapter N:" titles are skipped by looks_like_sentence).
+    title_lineno = next((i for i, ln in enumerate(lines, start=1) if ln.strip()), 0) if short else 0
     for lineno, line in enumerate(lines, start=1):
-        errors.extend(check_line(line, lineno))
+        if lineno != title_lineno:
+            errors.extend(check_line(line, lineno))
 
     # Check for auto-wrapped text blocks
     errors.extend(check_auto_wrapped_blocks(lines))
@@ -424,6 +434,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Strip Markdown *italic* and **bold** markers from files (and overwrite).",
     )
+    parser.add_argument(
+        "--short",
+        action="store_true",
+        help="Standalone short stories: the first line is the story title, not 'Chapter N: Subtitle'.",
+    )
     return parser.parse_args()
 
 
@@ -451,7 +466,7 @@ def main() -> int:
             exit_code = 1
             continue
 
-        errors = validate_file(path, strip_asterisks=args.strip_asterisks)
+        errors = validate_file(path, strip_asterisks=args.strip_asterisks, short=args.short)
 
         status = "OK" if not errors else "ERROR"
         if errors:

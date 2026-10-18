@@ -104,3 +104,15 @@ def test_strip_asterisks_keeps_scene_breaks():
     text, changed = strip_markdown_asterisks("She was *very* **wet**.\n\n***\n\nLater.\n")
     assert changed
     assert text == "She was very wet.\n\n***\n\nLater.\n"
+
+
+def test_validate_short_story_title(tmp_path):
+    from auto_writer.validate import validate_file
+
+    prose = "\n\n".join(f"Paragraph {i} of the story, with a complete sentence." for i in range(40))
+    path = tmp_path / "ch01.md"
+    path.write_text(f"The Night Bus Home\n\n{prose}\n")
+    assert any("Wrong title format" in m for _, m in validate_file(path, False))
+    assert validate_file(path, False, short=True) == []
+    path.write_text(f"# The Night Bus Home\n\n{prose}\n")
+    assert any("Markdown heading" in m for _, m in validate_file(path, False, short=True))

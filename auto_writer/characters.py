@@ -78,7 +78,9 @@ def story_text_within_budget(project: Project, max_words: int) -> Tuple[str, str
         used += words
     if not parts:
         return "(No chapters written yet; base the profiles on the plan.)", "Story text", []
-    if len(paths) == len(written):
+    if project.is_short:
+        label = "Story text"
+    elif len(paths) == len(written):
         label = "Story text (all chapters)"
     else:
         label = f"Story text (chapters {written[0]}–{written[len(paths) - 1]} of {written[-1]}; the bible covers the rest)"
@@ -110,7 +112,9 @@ def generate_characters(project: Project, gen: Generator, *, force: bool = False
 
     written = project.written_nums()
     inputs: List[Path] = [project.plan_path]
-    if written:
+    if written and project.is_short:
+        bible = "(A short story has no story bible; the whole story is below.)"
+    elif written:
         last = written[-1]
         ensure_bibles(project, gen, last, plan, retries=retries)
         bible = read_text(project.bible_file(last)).strip()

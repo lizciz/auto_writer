@@ -31,9 +31,9 @@ Your job:
     where this makes the text more readable.
   - Do not arbitrarily split a single dialogue line or sentence across
     multiple lines in the middle of a word or sentence.
-- Chapter structure:
-  - Each chapter should start with a heading like: "Chapter N: Subtitle".
-  - If there is an additional story title heading before that, remove it.
+- Title line:
+  - A chapter starts with a heading like "Chapter N: Subtitle"; a standalone short story starts with its title. Keep that line.
+  - If there is an additional story title heading before a chapter heading, remove it.
 - Be conservative:
   - The validation report may contain false positives. Only change something
     if it is clearly wrong or clearly an improvement in correctness or

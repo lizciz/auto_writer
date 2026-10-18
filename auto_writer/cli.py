@@ -25,8 +25,8 @@ from .project import (
     read_text,
     write_text,
 )
-from .text import parse_master_outline, strip_comments
-from .writing import load_plan, write_chapter
+from .text import parse_master_outline, strip_comments, word_count
+from .writing import load_plan, write_chapter, write_short_story
 
 
 def sanitize_dirname(s: str) -> str:
@@ -45,18 +45,22 @@ def cmd_init(args: argparse.Namespace) -> None:
     if args.set and args.set not in prompt_library().sets():
         die(f"Unknown prompt set '{args.set}'. Available: {', '.join(prompt_library().sets())}")
     project = Project.create(root, args.title)
+    if args.short:
+        project.set_config("form", "short")
     if args.set:
         project.set_config("prompt_set", args.set)
         print(f"Using prompt set '{args.set}'.")
     idea = project.path("idea")
     if not idea.exists():
-        write_text(idea, read_text(PACKAGE_DIR / "templates" / "idea.md"))
-    print(f"Initialized story project at: {root}")
+        template = "idea_short.md" if project.is_short else "idea.md"
+        write_text(idea, read_text(PACKAGE_DIR / "templates" / template))
+    print(f"Initialized {'short story' if project.is_short else 'story'} project at: {root}")
     if args.profile:
         set_profile(project, args.profile)
     else:
         print("No profile set yet. Set one with: aw profile <path>")
-    print(f"Next: write your idea in {project.rel(idea)}, then run `aw plan`.")
+    then = "`aw oneshot` (or `aw plan`)" if project.is_short else "`aw plan`"
+    print(f"Next: write your idea in {project.rel(idea)}, then run {then}.")
 
 
 def set_profile(project: Project, source: str) -> None:
@@ -109,19 +113,38 @@ def cmd_plan(args, project: Project) -> None:
     plan(project, Generator(project), ask=not args.no_questions, force=args.force, retries=args.retry)
 
 
+def require_full(project: Project, command: str) -> None:
+    if project.is_short:
+        die(
+            f"`aw {command}` is not used for short stories (\"form\": \"short\" in .story/config.json). "
+            "Short stories go straight from plan.md to `aw write`."
+        )
+
+
 def cmd_outline(args, project: Project) -> None:
+    require_full(project, "outline")
     outline(project, Generator(project), force=args.force, retries=args.retry)
 
 
 def cmd_review_outline(args, project: Project) -> None:
+    require_full(project, "review-outline")
     review_outline(project, Generator(project), apply=args.apply, retries=args.retry)
 
 
 def cmd_prepare(args, project: Project) -> None:
+    require_full(project, "prepare")
     prepare(project)
 
 
 def cmd_write(args, project: Project) -> None:
+    if project.is_short:
+        if args.chapter not in (None, 1):
+            die("A short story is a single text; there is no chapter " + str(args.chapter) + ".")
+        try:
+            write_short_story(project, Generator(project), fix_mode=args.fix_mode, retries=args.retry, force=args.force)
+        except RuntimeError as e:
+            die(str(e))
+        return
     outline_nums = project.outline_nums()
     if not outline_nums:
         die("No chapter outlines found. Run `aw prepare` first.")
@@ -159,7 +182,38 @@ def cmd_write(args, project: Project) -> None:
     print(f"Wrote {done} chapter(s).")
 
 
+def cmd_oneshot(args, project: Project) -> None:
+    """Short stories: idea -> plan -> story without stopping, redoing only what is out of date."""
+    if not project.is_short:
+        die("`aw oneshot` is for short stories. Create one with `aw init --short \"Title\"`.")
+    idea_path = project.path("idea")
+    if args.idea and args.idea.strip() != strip_comments(read_text(idea_path)):
+        if strip_comments(read_text(idea_path)):
+            backup = project.backup(idea_path)
+            print(f"Replacing {project.rel(idea_path)} (previous version: {project.rel(backup)}).")
+        write_text(idea_path, args.idea.strip() + "\n")
+
+    gen = Generator(project)
+    plan_path = project.path("plan")
+    replan = args.force or not plan_path.exists() or bool(project.changed_inputs(plan_path))
+    if replan:
+        plan(project, gen, ask=False, force=True, retries=args.retry, hint=False)
+    else:
+        print(f"Using the existing {project.rel(plan_path)} (it is up to date with the idea).")
+
+    story_path = project.story_file(1)
+    rewrite = args.force or replan or bool(project.changed_inputs(story_path))
+    if story_path.exists() and not rewrite:
+        print(f"{project.rel(story_path)} is up to date with the plan. Use `aw oneshot --force` to redo everything.")
+        return
+    try:
+        write_short_story(project, gen, fix_mode=args.fix_mode, retries=args.retry, force=True)
+    except RuntimeError as e:
+        die(str(e))
+
+
 def cmd_bible(args, project: Project) -> None:
+    require_full(project, "bible")
     gen = Generator(project)
     plan_text = load_plan(project)
     if args.chapter is not None:
@@ -213,12 +267,20 @@ def cmd_status(args, project: Project) -> None:
             return "ok (edited by you)"
         return "ok"
 
-    print(f"{project.title}  [{project.root}]")
+    print(f"{project.title}  [{project.root}]" + ("  (short story)" if project.is_short else ""))
     print(f"  idea:     {state(project.path('idea'))}")
     q = project.path("questions")
     if q.exists():
         print(f"  questions: {count_answers(read_text(q))} answered")
     print(f"  plan:     {state(project.plan_path)}  ({project.rel(project.plan_path)})")
+    if project.is_short:
+        story = project.story_file(1)
+        words = f"  ({word_count(read_text(story)):,} words)" if story.exists() else ""
+        print(f"  story:    {state(story)}{words}  ({project.rel(story)})")
+        chars = project.path("characters")
+        if chars.exists():
+            print(f"  characters: {state(chars)}  ({project.rel(chars)})")
+        return
     master = project.path("outline_master")
     n_outline = len(parse_master_outline(read_text(master))) if master.exists() else 0
     print(f"  outline:  {state(master)}  ({n_outline} chapters, {len(project.outline_nums())} prepared)")
@@ -342,10 +404,11 @@ def _warn_legacy_prompts(project: Project) -> None:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="aw",
-        description="Semi-automatic long-form story writer.",
+        description="Semi-automatic story writer: long-form chapter by chapter, or short stories in one go.",
         epilog=(
             "Typical flow: init -> (write idea.md) -> plan -> (answer questions.md) -> plan -> "
-            "outline -> review-outline -> prepare -> write --loop -> characters"
+            "outline -> review-outline -> prepare -> write --loop -> characters.  "
+            "Short story: init --short -> (write idea.md) -> oneshot -> characters"
         ),
     )
     p.add_argument("--version", action="version", version=f"auto_writer {__version__}")
@@ -366,6 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--path", help="Parent directory (default: CWD)")
     sp.add_argument("--profile", help="API profile: a name from ~/.config/llm-profiles or a path")
     sp.add_argument("--set", help="Prompt set (default: default); see `aw prompts`")
+    sp.add_argument("--short", action="store_true", help="A standalone short story written in one go")
 
     sp = add(
         "profile", cmd_profile,
@@ -391,7 +455,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     add("prepare", cmd_prepare, "Split chapter_outline.md into outline/chNN.md and story_arc.md")
 
-    sp = add("write", cmd_write, "Write the next unwritten chapter (or CHAPTER)")
+    sp = add(
+        "oneshot", cmd_oneshot,
+        "Short stories: plan (no questions) and write the story in one go, redoing only what is out of date",
+    )
+    sp.add_argument("idea", nargs="?", help="The idea text (default: idea.md)")
+    sp.add_argument("--fix-mode", choices=["quick", "full", "none"], default="quick")
+    sp.add_argument("--force", action="store_true", help="Regenerate the plan and the story")
+    add_retry(sp)
+
+    sp = add("write", cmd_write, "Write the next unwritten chapter (or CHAPTER); short stories: the story")
     sp.add_argument("chapter", nargs="?", type=int)
     sp.add_argument("--loop", action="store_true", help="Keep writing following unwritten chapters")
     sp.add_argument("--max-writes", type=int, help="Stop after this many chapters")

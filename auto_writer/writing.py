@@ -27,6 +27,9 @@ MIN_CHAPTER_SIZE = 500
 # A full-mode fix shorter than this fraction of the original is rejected.
 MIN_FULL_FIX_RATIO = 0.8
 
+# Short-story length when plan.md has no # Target Word Count.
+DEFAULT_SHORT_TARGET = "3500-4500"
+
 
 # ============================== Context ==============================
 
@@ -110,6 +113,25 @@ def chapter_variables(project: Project, n: int) -> Dict[str, Any]:
     return variables
 
 
+def short_story_variables(project: Project) -> Dict[str, Any]:
+    """Template variables for the short_writer prompt."""
+    plan = load_plan(project)
+    sections = parse_sections(plan)
+    target = sections.get("target_word_count", "") or DEFAULT_SHORT_TARGET
+    return {
+        **sections,
+        "title": project.title,
+        "story_title": project.title,
+        "plan": plan,
+        "target_word_count": target,
+        "length_instruction": length_instruction(target),
+    }
+
+
+def _what(project: Project, n: int) -> str:
+    return "the story" if project.is_short else f"chapter {n}"
+
+
 # ============================== Writing ==============================
 
 
@@ -141,12 +163,39 @@ def write_chapter(
 
     plan = load_plan(project)
     ensure_bibles(project, gen, n - 1, plan, retries=retries)
-    gen.warn_if_no_output_cap()
-
     print(f"Writing chapter {n}...")
-    variables = chapter_variables(project, n)
+    generate_story_file(project, gen, "writer", chapter_variables(project, n), n, fix_mode=fix_mode, retries=retries)
+    update_bible(project, gen, n, plan, retries=retries)
+    print(f"Chapter {n} done: {project.rel(story_path)}")
+    return True
+
+
+def write_short_story(
+    project: Project, gen: Generator, *, fix_mode: str = "quick", retries: int = 0, force: bool = False
+) -> bool:
+    """Write the whole short story (story/ch01.md) from plan.md and validate/fix it."""
+    if not load_plan(project):
+        print(f"ERROR: {project.rel(project.plan_path)} is missing or empty. Run `aw plan` first.")
+        return False
+    story_path = project.story_file(1)
+    if story_path.exists() and not force:
+        print("ERROR: The story is already written. Use --force to rewrite it (the old version is backed up).")
+        return False
+    print("Writing the story...")
+    generate_story_file(project, gen, "short_writer", short_story_variables(project), 1, fix_mode=fix_mode, retries=retries)
+    project.record(story_path, [project.plan_path])
+    print(f"Story done: {project.rel(story_path)}")
+    return True
+
+
+def generate_story_file(
+    project: Project, gen: Generator, task: str, variables: Dict[str, Any], n: int, *,
+    fix_mode: str = "quick", retries: int = 0,
+) -> None:
+    """Generate story/chNN.md with `task`, continuing a truncated reply, then validate/fix it."""
+    gen.warn_if_no_output_cap()
     result = gen.run(
-        "writer",
+        task,
         variables,
         f"ch{n:02d}",
         max_continuations=int(project.config["generation"].get("max_continuations", 2)),
@@ -156,13 +205,15 @@ def write_chapter(
         min_chars=MIN_CHAPTER_SIZE,
     )
 
+    story_path = project.story_file(n)
     if story_path.exists():
         project.backup(story_path)
     write_text(story_path, result.text.lstrip("#").strip() + "\n")
-    report_length(story_path, variables.get("target_word_count", ""))
+    report_length(story_path, variables.get("target_word_count", ""), "Story" if project.is_short else "Chapter")
+    what = _what(project, n)
     if result.finish_reason == "length" or ending_looks_truncated(result.text):
         print(
-            f"WARNING: chapter {n} still looks truncated (finish_reason={result.finish_reason}). "
+            f"WARNING: {what} still looks truncated (finish_reason={result.finish_reason}). "
             "Check the ending; consider raising max_completion_tokens in the profile."
         )
 
@@ -170,17 +221,13 @@ def write_chapter(
         try:
             run_validation_and_maybe_fix(project, gen, n, fix_mode=fix_mode, retries=retries)
         except RuntimeError as e:
-            print(f"WARNING: fixing chapter {n} failed ({e}); keeping the unfixed chapter.")
-
-    update_bible(project, gen, n, plan, retries=retries)
-    print(f"Chapter {n} done: {project.rel(story_path)}")
-    return True
+            print(f"WARNING: fixing {what} failed ({e}); keeping the unfixed text.")
 
 
-def report_length(story_path: Path, target: str) -> None:
+def report_length(story_path: Path, target: str, label: str = "Chapter") -> None:
     text = read_text(story_path)
     words = word_count(text)
-    line = f"Chapter length: {words:,} words, {len(text.splitlines())} lines"
+    line = f"{label} length: {words:,} words, {len(text.splitlines())} lines"
     rng = parse_word_range(target)
     if rng:
         lo, hi = rng
@@ -256,12 +303,13 @@ def run_validation_and_maybe_fix(
     full:  the whole chapter is rewritten (rejected if it comes back much shorter).
     """
     chapter_path = project.story_file(n)
-    all_errors = vc.validate_file(chapter_path, True)
+    what = _what(project, n)
+    all_errors = vc.validate_file(chapter_path, True, short=project.is_short)
     if not all_errors:
-        print(f"No validation issues found for chapter {n}.")
+        print(f"No validation issues found in {what}.")
         return
 
-    print(f"Validation found {len(all_errors)} potential issue(s) in chapter {n}.")
+    print(f"Validation found {len(all_errors)} potential issue(s) in {what}.")
     for lineno, msg in all_errors[:10]:
         print(f"  - line {lineno}: {msg}")
     if len(all_errors) > 10:
@@ -300,7 +348,7 @@ def run_validation_and_maybe_fix(
             last = line_range.stop - 1
         new_lines.extend(lines[last:])
         write_text(chapter_path, "".join(new_lines))
-        print(f"Applied {len(blocks)} fix(es) to chapter {n}.")
+        print(f"Applied {len(blocks)} fix(es) to {what}.")
         return
 
     report = "\n".join(f"line {ln}: {msg}" for ln, msg in errors)
@@ -318,4 +366,4 @@ def run_validation_and_maybe_fix(
         return
     project.backup(chapter_path)
     write_text(chapter_path, fixed)
-    print(f"Applied full-chapter fixes to chapter {n}.")
+    print(f"Applied full-text fixes to {what}.")

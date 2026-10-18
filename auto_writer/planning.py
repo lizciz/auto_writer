@@ -52,8 +52,12 @@ def count_answers(questions_md: str) -> int:
     return sum(1 for m in _ANSWER_RE.finditer(questions_md) if m.group(1).strip())
 
 
-def plan(project: Project, gen: Generator, *, ask: bool = True, force: bool = False, retries: int = 0) -> None:
+def plan(
+    project: Project, gen: Generator, *, ask: bool = True, force: bool = False, retries: int = 0,
+    hint: bool = True,
+) -> None:
     """Develop idea.md into plan.md, by default via a round of questions."""
+    questions_task, plan_task = ("short_questions", "short_plan") if project.is_short else ("plan_questions", "plan")
     idea = _require(project, "idea", "Write your story idea there first.")
     plan_path = project.path("plan")
     questions_path = project.path("questions")
@@ -64,7 +68,7 @@ def plan(project: Project, gen: Generator, *, ask: bool = True, force: bool = Fa
 
     if ask:
         if not questions_path.exists():
-            result = gen.run("plan_questions", base_vars, "plan", retries=retries)
+            result = gen.run(questions_task, base_vars, "plan", retries=retries)
             _write_generated(project, questions_path, result.text, [project.path("idea")])
             print(
                 f"\nAnswer the questions in {project.rel(questions_path)} (leave any blank to accept the "
@@ -90,9 +94,10 @@ def plan(project: Project, gen: Generator, *, ask: bool = True, force: bool = Fa
         inputs = [project.path("idea")]
 
     _guard_overwrite(project, plan_path, force, "plan")
-    result = gen.run("plan", variables, "plan", retries=retries)
+    result = gen.run(plan_task, variables, "plan", retries=retries)
     _write_generated(project, plan_path, result.text, inputs)
-    print("Review and edit the plan (especially # Assumptions), then run `aw outline`.")
+    if hint:
+        print(f"Review and edit the plan (especially # Assumptions), then run `aw {'write' if project.is_short else 'outline'}`.")
 
 
 def outline(project: Project, gen: Generator, *, force: bool = False, retries: int = 0) -> None:

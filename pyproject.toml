@@ -1,7 +1,7 @@
 [project]
 name = "auto_writer"
-version = "3.0.0"
-description = "Semi-automatic long-form story writer"
+version = "3.1.0"
+description = "Semi-automatic story writer: long-form chapters or one-shot short stories"
 requires-python = ">=3.10"
 dependencies = [
     "requests",

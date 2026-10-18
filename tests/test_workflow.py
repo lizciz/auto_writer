@@ -85,6 +85,8 @@ class FakeClient:
                 self.truncate_next_chapter = False
                 text += "\n\nShe looked"
                 reason = "length"
+        elif "complete standalone short story" in system:
+            text = f"The Night Bus Home\n\n{PROSE}"
         elif "copy editor" in system:
             text = "Fixed line."
         elif "SDXL tag profiles" in system:
@@ -297,3 +299,59 @@ def test_prompt_sets(project, monkeypatch, tmp_path, capsys):
     assert Project(proj.root).prompt_set("plan") == "default"
     run(monkeypatch, "prompts", "use", "noir", "plan")
     assert Project(proj.root).config["prompts"] == {}
+
+
+def test_short_story(project, monkeypatch, tmp_path, capsys):
+    _, client = project
+    monkeypatch.chdir(tmp_path)
+    run(monkeypatch, "init", "The Night Bus Home", "--short", "--profile", str(tmp_path / "profile.json"))
+    root = tmp_path / "The Night Bus Home"
+    monkeypatch.chdir(root)
+    proj = Project(root)
+    assert proj.is_short
+    assert "aw oneshot" in (root / "idea.md").read_text()
+    with pytest.raises(SystemExit):
+        run(monkeypatch, "outline")
+
+    # One command: idea -> plan (no questions) -> story, validated, no bible.
+    run(monkeypatch, "oneshot", "A woman on a bus.")
+    out = capsys.readouterr().out
+    assert (root / "idea.md").read_text() == "A woman on a bus.\n"
+    assert "Sky is green" in (root / "plan.md").read_text()
+    story = proj.story_file(1).read_text()
+    assert story.startswith("The Night Bus Home\n") and "Paragraph 39" in story
+    assert "No validation issues found in the story." in out
+    assert not list(proj.path("bible_dir").glob("*.md"))
+    prompt = proj.log_file("ch01.short_writer.prompt.md").read_text()
+    assert "Sky is green" in prompt and "Aim for 3,000–4,000 words" in prompt
+    assert proj.log_file("plan.short_plan.request.json").exists()
+
+    # Nothing changed: nothing is regenerated.
+    calls = len(client.calls)
+    run(monkeypatch, "oneshot")
+    assert len(client.calls) == calls
+    assert "up to date" in capsys.readouterr().out
+
+    # An edited plan rewrites only the story; a new idea redoes both.
+    (root / "plan.md").write_text((root / "plan.md").read_text() + "\n# Story Principles\nBe brief.\n")
+    run(monkeypatch, "oneshot")
+    assert len(client.calls) == calls + 1
+    assert list((proj.meta_dir / "backup").glob("ch01.*.md"))
+    run(monkeypatch, "oneshot", "A man on a train.")
+    assert len(client.calls) == calls + 3
+    assert "A man on a train." in client.calls[-2][-1]["content"]
+
+    run(monkeypatch, "status")
+    out = capsys.readouterr().out
+    assert "(short story)" in out and "story:    ok" in out
+
+    run(monkeypatch, "characters")
+    sent = client.calls[-1][-1]["content"]
+    assert "has no story bible" in sent and "Paragraph 39" in sent
+    assert not list(proj.path("bible_dir").glob("*.md"))
+
+    # The question round uses the short-story questions.
+    run(monkeypatch, "plan", "--force")
+    assert proj.log_file("plan.short_questions.request.json").exists()
+    with pytest.raises(SystemExit):
+        run(monkeypatch, "write", "2")
