@@ -26,6 +26,7 @@ User workflow (each step writes a file the user may edit before the next):
 ```bash
 aw init "Title" [--profile NAME] [--set SET] [--short]   # creates idea.md
 aw profile [NAME|PATH]   # no arg: list shared ~/.config/llm-profiles/*.json (storykit.profiles) + current; else copy into .story/profile.json
+aw profile --global [NAME|PATH] | --global --unset   # default profile for new projects (~/.config/auto_writer/config.json)
 aw plan                  # 1st run: questions.md; after answering: plan.md
 aw plan --no-questions   # skip the question round; model decides, lists # Assumptions
 aw outline               # chapter_outline.md from plan.md
@@ -47,7 +48,7 @@ All commands find the project by walking up from CWD (or `-C PATH`).
 ## Architecture (`auto_writer/`)
 
 - `cli.py` — argparse subcommands; thin wrappers around the modules below.
-- `project.py` — `Project`: config (merged with `DEFAULT_CONFIG`), paths, and generated-file bookkeeping in `.story/state.json` (`record()` stores input/output hashes; `changed_inputs()` drives staleness warnings; `backup()` copies to `.story/backup/` before overwriting).
+- `project.py` — user-wide settings in `~/.config/auto_writer/config.json` (`global_config()`; `default_profile` is stored by name when it lives in the shared profiles dir, else as a path; `aw init` and `load_profile` copy it into a project that has none). `Project`: config (merged with `DEFAULT_CONFIG`), paths, and generated-file bookkeeping in `.story/state.json` (`record()` stores input/output hashes; `changed_inputs()` drives staleness warnings; `backup()` copies to `.story/backup/` before overwriting).
 - `llm.py` — `Generator.run(task, variables, log_name, ...)`: resolves the task prompt, renders it, calls the API, logs `logs/<name>.<task>.{prompt.md,request.json,thinking.md}`. Continues responses that stop early (`finish_reason == "length"`, or a truncated-looking ending when the provider reports no reason), retries API errors and too-small outputs (refusals) with backoff.
 - `planning.py` — `plan` (questions round by default; `short_questions`/`short_plan` for short stories), `outline`, `review_outline`, `prepare`.
 - `writing.py` — `write_chapter`: ensures earlier bibles are current, builds variables (`chapter_variables`), generates and validates/fixes (`generate_story_file`, shared with `write_short_story`), updates the chapter's bible. `write_short_story` writes `story/ch01.md` from `short_story_variables` (plan sections + `{length_instruction}`, default target 3500–4500) and records it against plan.md so `aw oneshot` knows when it is stale. The full-mode fixer's output is rejected if it is <80% of the original length. Truncated-ending issues are never sent to the fixer (adding a full stop would hide the truncation).

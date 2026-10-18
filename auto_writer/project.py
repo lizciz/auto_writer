@@ -11,9 +11,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, NoReturn, Optional, overload
 
+from storykit.profiles import ProfileError, profiles_dir, resolve_profile
+
 from . import __version__
 
 CONFIG_DIR = Path.home() / ".config" / "auto_writer"
+GLOBAL_CONFIG_FILE = "config.json"  # in CONFIG_DIR: user-wide settings such as default_profile
 PACKAGE_DIR = Path(__file__).parent
 
 DEFAULT_PATHS = {
@@ -89,6 +92,27 @@ def file_sha(p: Path) -> str:
 def die(msg: str) -> NoReturn:
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def global_config() -> Dict[str, Any]:
+    return load_json(CONFIG_DIR / GLOBAL_CONFIG_FILE, {})
+
+
+def set_global_config(key: str, value: Any) -> None:
+    """Set (or with value None, remove) a user-wide setting."""
+    cfg = global_config()
+    if value is None:
+        cfg.pop(key, None)
+    else:
+        cfg[key] = value
+    save_json(CONFIG_DIR / GLOBAL_CONFIG_FILE, cfg)
+
+
+def profile_reference(path: Path) -> str:
+    """How to store a resolved profile: its name if it is in the shared profiles dir, else its path."""
+    if path.parent.resolve() == profiles_dir().resolve() and path.suffix == ".json":
+        return path.stem
+    return str(path.resolve())
 
 
 def chapter_file(n: int) -> str:
@@ -198,6 +222,17 @@ class Project:
     def prompt_set(self, task: str) -> str:
         """The prompt set to use for a task: a per-task override, else the project's set."""
         return self.config.get("prompts", {}).get(task) or self.config.get("prompt_set") or "default"
+
+    def set_profile(self, source: str, note: str = "") -> None:
+        """Copy a profile (name or path) into .story/profile.json."""
+        try:
+            src = resolve_profile(source)
+        except ProfileError as e:
+            die(str(e))
+        existed = self.profile_path.exists()
+        write_text(self.profile_path, read_text(src))
+        self.set_config("profile_source", str(src))
+        print(("Replaced" if existed else "Created") + f" profile from {src}{note}.")
 
     # ---------- chapters ----------
 

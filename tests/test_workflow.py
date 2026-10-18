@@ -100,6 +100,7 @@ class FakeClient:
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     monkeypatch.setattr("auto_writer.llm.CONFIG_DIR", tmp_path / "no_user_config")
+    monkeypatch.setattr("auto_writer.project.CONFIG_DIR", tmp_path / "no_user_config")
     monkeypatch.setattr("auto_writer.llm.time.sleep", lambda s: None)
     monkeypatch.chdir(tmp_path)
     profile = tmp_path / "profile.json"
@@ -355,3 +356,45 @@ def test_short_story(project, monkeypatch, tmp_path, capsys):
     assert proj.log_file("plan.short_questions.request.json").exists()
     with pytest.raises(SystemExit):
         run(monkeypatch, "write", "2")
+
+
+def test_global_default_profile(project, monkeypatch, tmp_path, capsys):
+    proj, _ = project
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    (profiles / "fast.json").write_text(json.dumps({"api_base": "http://y", "model": "fast-model"}))
+    monkeypatch.setenv("LLM_PROFILES_DIR", str(profiles))
+
+    with pytest.raises(SystemExit):
+        run(monkeypatch, "profile", "--unset")  # only with --global
+    with pytest.raises(SystemExit):
+        run(monkeypatch, "profile", "--global", "nope")
+    monkeypatch.chdir(tmp_path)  # works outside a project
+    run(monkeypatch, "profile", "--global", "fast")
+    config = tmp_path / "no_user_config" / "config.json"
+    assert json.loads(config.read_text()) == {"default_profile": "fast"}  # stored by name
+    run(monkeypatch, "profile")
+    out = capsys.readouterr().out
+    assert "Global default (for new projects): fast" in out and "* fast" in out
+
+    # New projects get the default; --profile still wins.
+    run(monkeypatch, "init", "Second")
+    assert json.loads((tmp_path / "Second" / ".story" / "profile.json").read_text())["model"] == "fast-model"
+    run(monkeypatch, "init", "Third", "--profile", str(tmp_path / "profile.json"))
+    assert json.loads((tmp_path / "Third" / ".story" / "profile.json").read_text())["model"] == "m"
+
+    # A project without a profile picks up the default on first use.
+    from auto_writer.llm import load_profile
+
+    proj.profile_path.unlink()
+    assert load_profile(proj)["model"] == "fast-model"
+    assert proj.profile_path.exists()
+
+    # A path outside the profiles dir is stored as a path.
+    run(monkeypatch, "profile", "--global", str(tmp_path / "profile.json"))
+    assert json.loads(config.read_text())["default_profile"] == str((tmp_path / "profile.json").resolve())
+    run(monkeypatch, "profile", "--global", "--unset")
+    assert json.loads(config.read_text()) == {}
+    proj.profile_path.unlink()
+    with pytest.raises(SystemExit):
+        load_profile(proj)

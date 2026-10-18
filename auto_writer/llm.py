@@ -11,7 +11,17 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 from storykit.llm import OpenAICompatClient
 from storykit.prompts import Prompt, PromptLibrary
 
-from .project import CONFIG_DIR, PACKAGE_DIR, Project, die, load_json, now_iso, save_json, write_text
+from .project import (
+    CONFIG_DIR,
+    PACKAGE_DIR,
+    Project,
+    die,
+    global_config,
+    load_json,
+    now_iso,
+    save_json,
+    write_text,
+)
 
 # Profile keys that belong to auto_writer and must never be sent to the API.
 _INTERNAL_PROFILE_KEYS = {"api_key"}
@@ -32,7 +42,13 @@ def resolve_prompt(project: Project, task: str) -> Prompt:
 
 def load_profile(project: Project) -> Dict[str, Any]:
     if not project.profile_path.exists():
-        die("No profile set. List available profiles with `aw profile`, then set one with `aw profile <name>`.")
+        default = global_config().get("default_profile")
+        if not default:
+            die(
+                "No profile set. List available profiles with `aw profile`, then set one with "
+                "`aw profile <name>` (this project) or `aw profile --global <name>` (default for new projects)."
+            )
+        project.set_profile(default, " (the global default)")
     prof = load_json(project.profile_path, {})
     if not prof:
         die(f"Profile is empty or invalid: {project.profile_path}")

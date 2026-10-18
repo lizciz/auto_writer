@@ -21,8 +21,11 @@ from .project import (
     PACKAGE_DIR,
     Project,
     die,
+    global_config,
     load_json,
+    profile_reference,
     read_text,
+    set_global_config,
     write_text,
 )
 from .text import parse_master_outline, strip_comments, word_count
@@ -55,23 +58,18 @@ def cmd_init(args: argparse.Namespace) -> None:
         template = "idea_short.md" if project.is_short else "idea.md"
         write_text(idea, read_text(PACKAGE_DIR / "templates" / template))
     print(f"Initialized {'short story' if project.is_short else 'story'} project at: {root}")
+    default = global_config().get("default_profile")
     if args.profile:
-        set_profile(project, args.profile)
+        project.set_profile(args.profile)
+    elif default:
+        project.set_profile(default, " (the global default)")
     else:
-        print("No profile set yet. Set one with: aw profile <path>")
+        print(
+            "No profile set yet. Set one with `aw profile <name>`, or set a default for new projects "
+            "with `aw profile --global <name>`."
+        )
     then = "`aw oneshot` (or `aw plan`)" if project.is_short else "`aw plan`"
     print(f"Next: write your idea in {project.rel(idea)}, then run {then}.")
-
-
-def set_profile(project: Project, source: str) -> None:
-    try:
-        src = resolve_profile(source)
-    except ProfileError as e:
-        die(str(e))
-    existed = project.profile_path.exists()
-    write_text(project.profile_path, read_text(src))
-    project.set_config("profile_source", str(src))
-    print(("Replaced" if existed else "Created") + f" profile from {src}.")
 
 
 def show_profiles(project: Optional[Project]) -> None:
@@ -84,23 +82,50 @@ def show_profiles(project: Optional[Project]) -> None:
         else:
             print(f"Current project ({project.root}) has no profile set.")
         print()
+    default = global_config().get("default_profile")
+    print(f"Global default (for new projects): {default or '(none)'}")
     entries = list_profiles()
-    print(f"Available profiles in {profiles_dir()} (shared by all tools; override with ${PROFILES_DIR_ENV}):")
+    print(f"\nAvailable profiles in {profiles_dir()} (shared by all tools; override with ${PROFILES_DIR_ENV}):")
     if not entries:
         print("  (none) Put profile JSON files there, e.g.:")
         print('  {"api_base": "https://...", "api_key_env": "API_KEY", "model": "...", "max_completion_tokens": 32000}')
     for e in entries:
-        print(f"  {e.name:<24} {e.summary()}")
-    print("\nSet one with: aw profile <name>   (a path to any JSON file also works)")
+        mark = "*" if e.name == default else " "
+        print(f"{mark} {e.name:<24} {e.summary()}")
+    print(
+        "\nSet one with: aw profile <name>   (a path to any JSON file also works)\n"
+        "Default for new projects: aw profile --global <name>"
+    )
+
+
+def set_default_profile(source: Optional[str], unset: bool) -> None:
+    if unset:
+        set_global_config("default_profile", None)
+        print("Removed the global default profile.")
+        return
+    if not source:
+        print(f"Global default profile: {global_config().get('default_profile') or '(none)'}")
+        return
+    try:
+        ref = profile_reference(resolve_profile(source))
+    except ProfileError as e:
+        die(str(e))
+    set_global_config("default_profile", ref)
+    print(f"Global default profile: {ref}. New projects (and projects without a profile) use it.")
 
 
 def cmd_profile(args, project: Optional[Project]) -> None:
+    if args.unset and not args.is_global:
+        die("--unset only applies to the global default: aw profile --global --unset")
+    if args.is_global:
+        set_default_profile(args.source, args.unset)
+        return
     if not args.source:
         show_profiles(project)
         return
     if project is None:
         die("Not in a story project. Run `aw init` first, or use `aw -C <project> profile ...`.")
-    set_profile(project, args.source)
+    project.set_profile(args.source)
 
 
 def cmd_title(args, project: Project) -> None:
@@ -427,7 +452,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("title")
     sp.add_argument("--dir", help="Directory name (default: sanitized title)")
     sp.add_argument("--path", help="Parent directory (default: CWD)")
-    sp.add_argument("--profile", help="API profile: a name from ~/.config/llm-profiles or a path")
+    sp.add_argument(
+        "--profile", help="API profile: a name from ~/.config/llm-profiles or a path (default: the global default)"
+    )
     sp.add_argument("--set", help="Prompt set (default: default); see `aw prompts`")
     sp.add_argument("--short", action="store_true", help="A standalone short story written in one go")
 
@@ -436,6 +463,11 @@ def build_parser() -> argparse.ArgumentParser:
         "Set the API profile by name (from ~/.config/llm-profiles) or path; without an argument, list profiles",
     )
     sp.add_argument("source", nargs="?")
+    sp.add_argument(
+        "--global", dest="is_global", action="store_true",
+        help="Set (or show) the default profile for new projects instead",
+    )
+    sp.add_argument("--unset", action="store_true", help="With --global: remove the default profile")
 
     sp = add("title", cmd_title, "Change the story title")
     sp.add_argument("text")
@@ -505,7 +537,7 @@ def main() -> None:
     if args.func is cmd_init:
         cmd_init(args)
         return
-    if args.func is cmd_profile and not args.source:
+    if args.func is cmd_profile and (args.is_global or not args.source):
         cmd_profile(args, Project.find(args.project, required=False))
         return
     project = Project.find(args.project)
